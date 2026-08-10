@@ -1,0 +1,1 @@
+"""Generate-advisory use case."""

@@ -1,0 +1,1 @@
+"""Concrete repository adapters."""

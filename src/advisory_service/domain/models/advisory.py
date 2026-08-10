@@ -1,0 +1,1 @@
+"""Advisory result domain model."""

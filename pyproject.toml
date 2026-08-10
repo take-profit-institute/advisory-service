@@ -1,0 +1,37 @@
+[project]
+name = "advisory-service"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "ironhamlab", email = "03110315@naver.com" }
+]
+requires-python = ">=3.12.13"
+dependencies = [
+    "asyncpg>=0.31.0",
+    "grpcio>=1.83.0",
+    "grpcio-health-checking>=1.83.0",
+    "httpx>=0.28.1",
+    "langgraph>=1.2.10",
+    "openai>=2.53.0",
+    "protobuf>=7.35.1",
+    "pydantic-settings>=2.15.0",
+    "structlog>=26.1.0",
+]
+
+[project.scripts]
+advisory-service = "advisory_service.main:main"
+
+[build-system]
+requires = ["uv_build>=0.12.3,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "grpcio-tools>=1.83.0",
+    "mypy>=2.3.0",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.2",
+]

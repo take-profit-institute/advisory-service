@@ -1,0 +1,1 @@
+"""Candidate stock search port."""

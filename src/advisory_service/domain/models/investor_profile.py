@@ -1,0 +1,1 @@
+"""Investor profile domain model."""
