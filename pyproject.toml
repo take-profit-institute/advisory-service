@@ -1,12 +1,9 @@
 [project]
 name = "advisory-service"
 version = "0.1.0"
-description = "Add your description here"
+description = "Candle 프로젝트 — 사용자 투자성향 기반 종목 추천 마이크로서비스"
 readme = "README.md"
-authors = [
-    { name = "ironhamlab", email = "03110315@naver.com" }
-]
-requires-python = ">=3.12.13"
+requires-python = "==3.12.*"
 dependencies = [
     "asyncpg>=0.31.0",
     "grpcio>=1.83.0",
@@ -35,3 +32,7 @@ dev = [
     "pytest-cov>=7.1.0",
     "ruff>=0.16.2",
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

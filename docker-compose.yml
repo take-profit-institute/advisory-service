@@ -1,0 +1,25 @@
+# 로컬 개발용. AWS 실제 배포 환경의 PostgreSQL 버전과 반드시 맞출 것
+# (pgvector 확장이 포함된 이미지를 사용해야 함)
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: advisory
+      POSTGRES_PASSWORD: advisory
+      POSTGRES_DB: advisory
+    ports:
+      - "5432:5432"
+    volumes:
+      - advisory_pgdata:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+
+  advisory-service:
+    build: .
+    env_file: .env
+    depends_on:
+      - postgres
+    ports:
+      - "50051:50051"
+
+volumes:
+  advisory_pgdata:

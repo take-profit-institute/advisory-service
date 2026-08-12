@@ -1,0 +1,34 @@
+// advisory-service가 다른 Candle 내부 서비스(BFF 등)에 노출하는 gRPC 계약.
+//
+// 초안 단계 — 필드/서비스명은 팀장 및 BFF 담당자와 협의 후 확정 필요.
+// (Candle 컨벤션: 내부 서비스 간 통신은 gRPC, REST는 웹앱-BFF 구간만)
+
+syntax = "proto3";
+
+package advisory.v1;
+
+service AdvisoryService {
+  // 사용자 투자성향 기반 종목 추천 조회
+  rpc GetRecommendations(GetRecommendationsRequest) returns (GetRecommendationsResponse);
+}
+
+message GetRecommendationsRequest {
+  int64 user_id = 1;
+  string risk_tolerance = 2;       // 'conservative' | 'moderate' | 'aggressive'
+  string investment_horizon = 3;   // 'short' | 'mid' | 'long'
+  repeated string preferred_sectors = 4;
+  string free_text_query = 5;
+}
+
+message GetRecommendationsResponse {
+  repeated Recommendation recommendations = 1;
+}
+
+message Recommendation {
+  int64 stock_id = 1;
+  string ticker = 2;
+  string name_kr = 3;
+  double fit_score = 4;
+  string narrative = 5;
+  repeated string improvement_tags = 6;  // 노출 여부는 학습콘텐츠 담당자와 별도 협의
+}

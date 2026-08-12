@@ -1,1 +1,13 @@
-"""Async PostgreSQL connection-pool lifecycle."""
+"""asyncpg 커넥션 풀 관리."""
+
+import asyncpg
+
+from advisory_service.config import Settings
+
+
+async def create_pool(settings: Settings) -> asyncpg.Pool:
+    return await asyncpg.create_pool(
+        dsn=settings.database_url,
+        min_size=2,
+        max_size=10,
+    )
