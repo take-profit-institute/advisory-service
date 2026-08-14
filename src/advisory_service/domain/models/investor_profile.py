@@ -18,7 +18,7 @@ class InvestmentHorizon(str, Enum):
 
 @dataclass(frozen=True)
 class InvestorProfile:
-    user_id: int
+    user_id: str
     risk_tolerance: RiskTolerance
     investment_horizon: InvestmentHorizon | None = None
     preferred_sectors: list[str] = field(default_factory=list)

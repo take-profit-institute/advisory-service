@@ -2,6 +2,7 @@
 
 from advisory_service.application.advisory.state import AdvisoryState
 
+
 async def build_profile(state: AdvisoryState) -> AdvisoryState:
     profile = state["investor_profile"]
     # free_text_query가 비어있으면 risk_tolerance/preferred_sectors 기반으로

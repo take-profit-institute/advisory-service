@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+package candle.common.v1;
+
+option java_multiple_files = true;
+option java_package = "org.profit.candle.proto.common.v1";
+
+import "google/protobuf/timestamp.proto";
+
+message PageRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message PageResponse {
+  string next_page_token = 1;
+}
+
+message Money {
+  string currency = 1;
+  int64 units = 2;
+}
+
+message Decimal {
+  string value = 1;
+}
+
+message Audit {
+  google.protobuf.Timestamp created_at = 1;
+  google.protobuf.Timestamp updated_at = 2;
+  int64 version = 3;
+}
+
+message ErrorDetail {
+  string code = 1;
+  string message = 2;
+  map<string, string> fields = 3;
+  bool retryable = 4;
+  string trace_id = 5;
+}
+
+// 모든 상태 변경 RPC의 request에 포함한다.
+// 호출 어댑터는 같은 값을 x-idempotency-key metadata에도 넣어야 한다.
+message CommandMetadata {
+  string idempotency_key = 1;
+}

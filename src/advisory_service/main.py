@@ -28,10 +28,34 @@ def _configure_logging() -> None:
 
 async def _amain() -> None:
     _configure_logging()
-    settings = Settings()
-    graph, _advisory_repository, _stock_catalog_synchronizer = await build_application(settings)
-    servicer = AdvisoryServicer(graph)
-    await serve(servicer, port=settings.grpc_port)
+    settings = Settings()  # type: ignore[call-arg]  # values are loaded from environment
+    use_case, stock_catalog_synchronizer = await build_application(settings)
+    servicer = AdvisoryServicer(use_case)
+    sync_task = None
+    if settings.stock_sync_enabled:
+        sync_task = asyncio.create_task(
+            _run_stock_sync_loop(
+                stock_catalog_synchronizer,
+                settings.stock_sync_interval_seconds,
+            )
+        )
+    try:
+        await serve(servicer, port=settings.grpc_port)
+    finally:
+        if sync_task is not None:
+            sync_task.cancel()
+            await asyncio.gather(sync_task, return_exceptions=True)
+
+
+async def _run_stock_sync_loop(synchronizer, interval_seconds: int) -> None:
+    log = structlog.get_logger()
+    while True:
+        try:
+            synced = await synchronizer.sync_all()
+            log.info("stock_catalog_synchronized", synced_count=synced)
+        except Exception:
+            log.exception("stock_catalog_sync_failed")
+        await asyncio.sleep(max(interval_seconds, 60))
 
 
 def main() -> None:

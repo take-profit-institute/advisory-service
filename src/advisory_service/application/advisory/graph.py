@@ -14,18 +14,26 @@ await하지 않고 그대로 반환값 취급해버린다. functools.partial을 
 
 from functools import partial
 
-from langgraph.graph import StateGraph, END
+from langgraph.graph import END, StateGraph
 
 from advisory_service.application.advisory.nodes.build_profile import build_profile
-from advisory_service.application.advisory.nodes.generate_narrative import generate_narrative
-from advisory_service.application.advisory.nodes.retrieve_candidates import retrieve_candidates
-from advisory_service.application.advisory.nodes.score_candidates import score_candidates
+from advisory_service.application.advisory.nodes.generate_narrative import (
+    generate_narrative,
+)
+from advisory_service.application.advisory.nodes.retrieve_candidates import (
+    retrieve_candidates,
+)
+from advisory_service.application.advisory.nodes.score_candidates import (
+    score_candidates,
+)
 from advisory_service.application.advisory.nodes.validate_result import (
     route_after_validation,
     validate_result,
 )
 from advisory_service.application.advisory.state import AdvisoryState
-from advisory_service.application.ports.narrative_generator import NarrativeGeneratorPort
+from advisory_service.application.ports.narrative_generator import (
+    NarrativeGeneratorPort,
+)
 from advisory_service.application.ports.stock_metrics_reader import StockMetricsReader
 from advisory_service.application.ports.stock_search import StockSearchPort
 
@@ -39,8 +47,14 @@ def build_advisory_graph(
 
     graph.add_node("build_profile", build_profile)
     graph.add_node("retrieve_candidates", partial(retrieve_candidates, stock_search=stock_search))
-    graph.add_node("score_candidates", partial(score_candidates, stock_metrics_reader=stock_metrics_reader),)
-    graph.add_node("generate_narrative", partial(generate_narrative, narrative_generator=narrative_generator),)
+    graph.add_node(
+        "score_candidates",
+        partial(score_candidates, stock_metrics_reader=stock_metrics_reader),
+    )
+    graph.add_node(
+        "generate_narrative",
+        partial(generate_narrative, narrative_generator=narrative_generator),
+    )
     graph.add_node("validate_result", validate_result)
 
     graph.set_entry_point("build_profile")
@@ -49,6 +63,10 @@ def build_advisory_graph(
     graph.add_edge("score_candidates", "generate_narrative")
     graph.add_edge("generate_narrative", "validate_result")
 
-    graph.add_conditional_edge("validate_result", route_after_validation, {"retry": "generate_narrative", "end": END},)
+    graph.add_conditional_edges(
+        "validate_result",
+        route_after_validation,
+        {"retry": "generate_narrative", "end": END},
+    )
 
     return graph.compile()

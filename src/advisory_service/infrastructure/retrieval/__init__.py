@@ -1,1 +1,0 @@
-"""Candidate retrieval adapters."""

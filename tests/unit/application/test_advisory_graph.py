@@ -19,15 +19,18 @@ class FakeStockSearch:
     async def hybrid_search(self, query_text, top_k=20):
         return [
             RetrievedCandidate(
-                stock_id=1, ticker="005930", name_kr="삼성전자",
+                stock_code="005930", name_kr="삼성전자",
                 narrative_content="...", vector_rank=1, keyword_rank=1, rrf_score=0.03,
             )
         ]
 
 
 class FakeStockMetricsReader:
-    async def get_metrics(self, stock_id):
+    async def get_metrics(self, stock_code):
         return StockMetrics(per=10, pbr=1, roe=12, volatility_90d=15)
+
+    async def get_metrics_many(self, stock_codes):
+        return {code: StockMetrics(per=10, pbr=1, roe=12, volatility_90d=15) for code in stock_codes}
 
 
 class FakeNarrativeGenerator:
@@ -45,7 +48,9 @@ async def test_advisory_graph_end_to_end_with_fakes():
 
     initial_state = {
         "investor_profile": InvestorProfile(
-            user_id=1, risk_tolerance=RiskTolerance.MODERATE, free_text_query="저평가 우량주"
+            user_id="11111111-1111-1111-1111-111111111111",
+            risk_tolerance=RiskTolerance.MODERATE,
+            free_text_query="저평가 우량주",
         ),
         "retrieved_candidates": [],
         "scored_candidates": [],
@@ -59,4 +64,4 @@ async def test_advisory_graph_end_to_end_with_fakes():
 
     assert result["validation_passed"] is True
     assert len(result["recommendations"]) == 1
-    assert result["recommendations"][0].ticker == "005930"
+    assert result["recommendations"][0].stock_code == "005930"

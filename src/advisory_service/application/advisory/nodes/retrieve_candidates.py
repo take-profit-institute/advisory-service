@@ -5,10 +5,8 @@ from advisory_service.application.ports.stock_search import StockSearchPort
 
 
 async def retrieve_candidates(
-    state: AdvisoryState,
-    stock_search: StockSearchPort,
+    state: AdvisoryState, stock_search: StockSearchPort
 ) -> AdvisoryState:
     profile = state["investor_profile"]
     candidates = await stock_search.hybrid_search(profile.free_text_query, top_k=20)
-
     return {**state, "retrieved_candidates": candidates}

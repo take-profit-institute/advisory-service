@@ -17,7 +17,7 @@ import asyncpg
 
 from advisory_service.domain.models.candidate import RetrievedCandidate
 
-RRF_K = 60  # RRF 공식에서 k 값, 정보검색 분야의 관례적 기본값
+RRF_K = 60
 
 
 class HybridStockSearch:
@@ -32,21 +32,25 @@ class HybridStockSearch:
         async with self._pool.acquire() as conn:
             vector_results = await self._vector_search(conn, query_embedding, top_k)
             keyword_results = await self._keyword_search(conn, query_text, top_k)
-        return self._reciprocal_rank_fusion(vector_results, keyword_results)
+        # 벡터/키워드 검색 결과를 합치면 최대 2*top_k개가 나올 수 있으므로,
+        # 포트가 약속한 top_k 의미를 지키기 위해 RRF 융합 이후 다시 자른다.
+        fused = self._reciprocal_rank_fusion(vector_results, keyword_results)
+        return fused[:top_k]
 
     async def _vector_search(
         self, conn: asyncpg.Connection, query_embedding: list[float], top_k: int
     ) -> list[dict]:
+        vector_literal = "[" + ",".join(str(value) for value in query_embedding) + "]"
         rows = await conn.fetch(
             """
-            SELECT s.stock_id, s.ticker, s.name_kr, n.content,
+            SELECT s.stock_code, s.name_kr, n.content,
                    1 - (n.embedding <=> $1::vector) AS similarity
             FROM stock_narratives n
-            JOIN stocks_cache s ON s.stock_id = n.stock_id
+            JOIN stocks_cache s ON s.stock_code = n.stock_code
             ORDER BY n.embedding <=> $1::vector
             LIMIT $2
             """,
-            query_embedding,
+            vector_literal,
             top_k,
         )
         return [dict(r) for r in rows]
@@ -56,15 +60,15 @@ class HybridStockSearch:
     ) -> list[dict]:
         rows = await conn.fetch(
             """
-            SELECT s.stock_id, s.ticker, s.name_kr, n.content,
+            SELECT s.stock_code, s.name_kr, n.content,
                    GREATEST(
                        similarity(s.name_kr, $1),
-                       similarity(s.ticker, $1),
+                       similarity(s.stock_code, $1),
                        similarity(n.content, $1)
                    ) AS similarity
             FROM stocks_cache s
-            JOIN stock_narratives n ON n.stock_id = s.stock_id
-            WHERE s.name_kr % $1 OR s.ticker % $1 OR n.content % $1
+            JOIN stock_narratives n ON n.stock_code = s.stock_code
+            WHERE s.name_kr % $1 OR s.stock_code % $1 OR n.content % $1
             ORDER BY similarity DESC
             LIMIT $2
             """,
@@ -78,10 +82,10 @@ class HybridStockSearch:
         vector_results: list[dict], keyword_results: list[dict], k: int = RRF_K
     ) -> list[RetrievedCandidate]:
         """순수 계산 로직. 단위테스트는 tests/unit/infrastructure/test_rrf.py 참고."""
-        scores: dict[int, dict] = {}
+        scores: dict[str, dict] = {}
 
         for rank, doc in enumerate(vector_results, start=1):
-            sid = doc["stock_id"]
+            sid = doc["stock_code"]
             scores.setdefault(
                 sid, {"doc": doc, "vector_rank": None, "keyword_rank": None, "rrf": 0.0}
             )
@@ -89,7 +93,7 @@ class HybridStockSearch:
             scores[sid]["rrf"] += 1 / (k + rank)
 
         for rank, doc in enumerate(keyword_results, start=1):
-            sid = doc["stock_id"]
+            sid = doc["stock_code"]
             scores.setdefault(
                 sid, {"doc": doc, "vector_rank": None, "keyword_rank": None, "rrf": 0.0}
             )
@@ -100,8 +104,7 @@ class HybridStockSearch:
 
         return [
             RetrievedCandidate(
-                stock_id=item["doc"]["stock_id"],
-                ticker=item["doc"]["ticker"],
+                stock_code=item["doc"]["stock_code"],
                 name_kr=item["doc"]["name_kr"],
                 narrative_content=item["doc"]["content"],
                 vector_rank=item["vector_rank"],

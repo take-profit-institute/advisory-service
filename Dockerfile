@@ -30,9 +30,15 @@ RUN GEN_DIR=src/advisory_service/transport/grpc/generated && \
       --python_out="$GEN_DIR" \
       --pyi_out="$GEN_DIR" \
       --grpc_python_out="$GEN_DIR" \
-      proto/advisory/v1/advisory.proto && \
+      proto/advisory/v1/advisory.proto \
+      proto/candle/common/v1/common.proto \
+      proto/candle/stock/v1/stock.proto \
+      proto/candle/stock/v1/chart.proto && \
     find "$GEN_DIR" -type d -exec sh -c 'test -f "$1/__init__.py" || touch "$1/__init__.py"' _ {} \; && \
-    sed -i 's/^from advisory\.v1 import/from . import/' "$GEN_DIR/advisory/v1/advisory_pb2_grpc.py"
+    sed -i 's/^from advisory\.v1 import/from . import/' "$GEN_DIR/advisory/v1/advisory_pb2_grpc.py" && \
+    sed -i 's/^from candle\.stock\.v1 import/from . import/' "$GEN_DIR/candle/stock/v1/stock_pb2_grpc.py" && \
+    sed -i 's/^from candle\.stock\.v1 import/from . import/' "$GEN_DIR/candle/stock/v1/chart_pb2_grpc.py" && \
+    sed -i 's/^from candle\.common\.v1 import/from ...common.v1 import/' "$GEN_DIR/candle/stock/v1/stock_pb2.py"
 
 # ------------------------------------------------------------
 # Stage 2: runtime-builder — 프로덕션 의존성만 설치 (dev 그룹 제외).

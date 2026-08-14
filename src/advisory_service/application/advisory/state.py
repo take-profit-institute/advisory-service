@@ -12,6 +12,7 @@ from advisory_service.domain.models.advisory import AdvisoryRecommendation
 from advisory_service.domain.models.candidate import RetrievedCandidate, ScoredCandidate
 from advisory_service.domain.models.investor_profile import InvestorProfile
 
+
 class AdvisoryState(TypedDict):
     # --- 입력 ---
     investor_profile: InvestorProfile
@@ -25,7 +26,7 @@ class AdvisoryState(TypedDict):
     # --- generate_narrative 노드 출력 ---
     recommendations: list[AdvisoryRecommendation]
 
-    # -- validate_result 노드 출력 ---
+    # --- validate_result 노드 출력 ---
     validation_passed: bool
     validation_errors: list[str]
     retry_count: int

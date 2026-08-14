@@ -7,8 +7,7 @@ from dataclasses import dataclass, field
 class RetrievedCandidate:
     """하이브리드 검색(벡터+키워드) 결과 한 건."""
 
-    stock_id: int
-    ticker: str
+    stock_code: str
     name_kr: str
     narrative_content: str
     vector_rank: int | None
@@ -24,16 +23,17 @@ class StockMetrics:
     pbr: float
     roe: float
     volatility_90d: float
+    price_snapshot: float | None = None
 
 
 @dataclass(frozen=True)
 class ScoredCandidate:
     """스코어링 완료 후보. score_breakdown은 narrative 생성 근거로 재사용된다."""
 
-    stock_id: int
-    ticker: str
+    stock_code: str
     name_kr: str
     rrf_score: float
     fit_score: float
+    price_snapshot: float | None = None
     score_breakdown: dict[str, float] = field(default_factory=dict)
     improvement_tags: list[str] = field(default_factory=list)

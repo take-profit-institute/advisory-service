@@ -32,8 +32,7 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 --        candles(일봉) 원본 데이터를 받아 advisory-service가 직접 계산
 -- ------------------------------------------------------------
 CREATE TABLE stocks_cache (
-    stock_id                     BIGINT PRIMARY KEY,          -- Stock Service의 종목 ID 그대로 사용
-    ticker                        VARCHAR(20) NOT NULL UNIQUE, -- 종목 코드
+    stock_code                    VARCHAR(20) PRIMARY KEY,     -- Stock Service gRPC의 code
     name_kr                        VARCHAR(100) NOT NULL,      -- 종목명 (한글)
     name_en                        VARCHAR(100),
     sector                          VARCHAR(50),
@@ -50,25 +49,30 @@ CREATE TABLE stocks_cache (
     -- 변동성 (advisory-service가 candles 원본 데이터로 직접 계산한 값)
     volatility_90d                        NUMERIC(6,3),
     volatility_calculated_at               TIMESTAMPTZ,  -- 변동성 계산 시점 (재계산 주기 판단용)
+    latest_close                            NUMERIC(12,2),
+    latest_close_at                         TIMESTAMPTZ,
 
     synced_at                               TIMESTAMPTZ NOT NULL DEFAULT now()  -- 마지막 동기화 시각
 );
 
 CREATE INDEX idx_stocks_cache_name_trgm ON stocks_cache USING GIN (name_kr gin_trgm_ops);
-CREATE INDEX idx_stocks_cache_ticker_trgm ON stocks_cache USING GIN (ticker gin_trgm_ops);
+CREATE INDEX idx_stocks_cache_code_trgm ON stocks_cache USING GIN (stock_code gin_trgm_ops);
 
 -- ------------------------------------------------------------
 -- 2. 종목 내러티브 문서 (비정형 데이터: 벡터 검색이 강한 영역)
 -- ------------------------------------------------------------
 CREATE TABLE stock_narratives (
     narrative_id    BIGSERIAL PRIMARY KEY,
-    stock_id        BIGINT NOT NULL REFERENCES stocks_cache(stock_id) ON DELETE CASCADE,
+    stock_code      VARCHAR(20) NOT NULL REFERENCES stocks_cache(stock_code) ON DELETE CASCADE,
     narrative_type  VARCHAR(30) NOT NULL,
     content         TEXT NOT NULL,
     embedding       VECTOR(1536) NOT NULL,  -- text-embedding-3-small 기준 1536차원
     source          VARCHAR(50),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE UNIQUE INDEX uq_stock_narratives_source
+    ON stock_narratives (stock_code, narrative_type, source);
 
 CREATE INDEX idx_narratives_embedding ON stock_narratives
     USING hnsw (embedding vector_cosine_ops);
@@ -78,7 +82,7 @@ CREATE INDEX idx_narratives_content_trgm ON stock_narratives USING GIN (content 
 -- 3. 사용자 투자 성향 프로필
 -- ------------------------------------------------------------
 CREATE TABLE user_profiles (
-    user_id             BIGINT PRIMARY KEY,
+    user_id             VARCHAR(64) PRIMARY KEY,
     risk_tolerance       VARCHAR(20) NOT NULL,
     investment_horizon    VARCHAR(20),
     preferred_sectors     TEXT[],
@@ -95,8 +99,8 @@ CREATE TABLE user_profiles (
 -- ------------------------------------------------------------
 CREATE TABLE recommendations (
     recommendation_id  BIGSERIAL PRIMARY KEY,
-    user_id             BIGINT NOT NULL REFERENCES user_profiles(user_id),
-    stock_id            BIGINT NOT NULL REFERENCES stocks_cache(stock_id),
+    user_id             VARCHAR(64) NOT NULL REFERENCES user_profiles(user_id),
+    stock_code          VARCHAR(20) NOT NULL REFERENCES stocks_cache(stock_code),
     rrf_score            NUMERIC(8,5),
     fit_score             NUMERIC(8,5),
     narrative              TEXT,

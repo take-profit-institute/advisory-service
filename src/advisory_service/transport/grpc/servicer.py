@@ -1,50 +1,75 @@
-"""
-AdvisoryServiceServicer 구현체 — gRPC 요청을 받아 application/advisory/graph.py를
-실행하고, 결과를 proto 응답 메시지로 매핑한다.
+"""인증된 x-user-id를 사용하는 AdvisoryService gRPC transport."""
 
-proto/advisory/v1/advisory.proto 계약이 아직 draft 상태라, 아래 import는
-scripts/generate_grpc.sh 실행 후 생성되는 transport/grpc/generated/ 모듈을
-참조하도록 채워질 예정이다 (계약 확정 후 작업).
-"""
+from uuid import UUID
 
-# from advisory_service.transport.grpc.generated import advisory_pb2, advisory_pb2_grpc
-from advisory_service.application.advisory.state import AdvisoryState
+import grpc
+
+from advisory_service.application.advisory.use_case import GenerateAdvisoryUseCase
 from advisory_service.domain.models.investor_profile import (
     InvestmentHorizon,
     InvestorProfile,
     RiskTolerance,
 )
+from advisory_service.transport.grpc.generated.advisory.v1 import (
+    advisory_pb2,
+    advisory_pb2_grpc,
+)
+
+USER_ID_METADATA_KEY = "x-user-id"
 
 
-class AdvisoryServicer:
-    """proto 확정 후 advisory_pb2_grpc.AdvisoryServiceServicer를 상속하도록 변경."""
-
-    def __init__(self, graph):
-        self._graph = graph  # application.advisory.graph.build_advisory_graph() 결과
+class AdvisoryServicer(advisory_pb2_grpc.AdvisoryServiceServicer):
+    def __init__(self, use_case: GenerateAdvisoryUseCase):
+        self._use_case = use_case
 
     async def GetRecommendations(self, request, context):
+        user_id = await self._require_user_id(context)
+        try:
+            risk_tolerance = RiskTolerance(request.risk_tolerance)
+            investment_horizon = (
+                InvestmentHorizon(request.investment_horizon)
+                if request.investment_horizon
+                else None
+            )
+        except ValueError as exc:
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
+            raise AssertionError("context.abort must terminate the RPC") from exc
+
         profile = InvestorProfile(
-            user_id=request.user_id,
-            risk_tolerance=RiskTolerance(request.risk_tolerance),
-            investment_horizon=InvestmentHorizon(request.investment_horizon)
-            if request.investment_horizon
-            else None,
+            user_id=user_id,
+            risk_tolerance=risk_tolerance,
+            investment_horizon=investment_horizon,
             preferred_sectors=list(request.preferred_sectors),
             free_text_query=request.free_text_query,
         )
+        result = await self._use_case.execute(profile)
 
-        initial_state: AdvisoryState = {
-            "investor_profile": profile,
-            "retrieved_candidates": [],
-            "scored_candidates": [],
-            "recommendations": [],
-            "validation_passed": False,
-            "validation_errors": [],
-            "retry_count": 0,
-        }
+        return advisory_pb2.GetRecommendationsResponse(
+            recommendations=[
+                advisory_pb2.Recommendation(
+                    stock_code=item.stock_code,
+                    name_kr=item.name_kr,
+                    fit_score=item.fit_score,
+                    narrative=item.narrative,
+                    improvement_tags=item.improvement_tags,
+                    price_snapshot=int(item.price_snapshot or 0),
+                )
+                for item in result.recommendations
+            ],
+            validation_status=result.validation_status.value,
+            validation_errors=result.validation_errors,
+            retry_count=result.retry_count,
+        )
 
-        result_state = await self._graph.ainvoke(initial_state)
-
-        # TODO: result_state["recommendations"] -> advisory_pb2.GetRecommendationsResponse 매핑
-        # (proto 계약 확정 및 코드 생성 후 작성)
-        return result_state["recommendations"]
+    @staticmethod
+    async def _require_user_id(context) -> str:
+        metadata = dict(context.invocation_metadata())
+        user_id = metadata.get(USER_ID_METADATA_KEY)
+        if not user_id:
+            await context.abort(grpc.StatusCode.UNAUTHENTICATED, "MISSING_ACTOR")
+            raise AssertionError("context.abort must terminate the RPC")
+        try:
+            return str(UUID(user_id))
+        except ValueError as exc:
+            await context.abort(grpc.StatusCode.UNAUTHENTICATED, "INVALID_ACTOR")
+            raise AssertionError("context.abort must terminate the RPC") from exc

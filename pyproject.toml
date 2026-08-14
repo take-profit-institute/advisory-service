@@ -36,3 +36,9 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = ["integration: requires the isolated advisory_test PostgreSQL database"]
+
+[tool.mypy]
+python_version = "3.12"
+exclude = "src/advisory_service/transport/grpc/generated/"
+ignore_missing_imports = true

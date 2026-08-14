@@ -5,7 +5,7 @@
 
 syntax = "proto3";
 
-package advisory.v1;
+package candle.advisory.v1;
 
 service AdvisoryService {
   // 사용자 투자성향 기반 종목 추천 조회
@@ -13,22 +13,25 @@ service AdvisoryService {
 }
 
 message GetRecommendationsRequest {
-  int64 user_id = 1;
-  string risk_tolerance = 2;       // 'conservative' | 'moderate' | 'aggressive'
-  string investment_horizon = 3;   // 'short' | 'mid' | 'long'
-  repeated string preferred_sectors = 4;
-  string free_text_query = 5;
+  // 사용자 ID는 신뢰 가능한 x-user-id gRPC metadata에서 읽는다.
+  string risk_tolerance = 1;       // 'conservative' | 'moderate' | 'aggressive'
+  string investment_horizon = 2;   // 'short' | 'mid' | 'long'
+  repeated string preferred_sectors = 3;
+  string free_text_query = 4;
 }
 
 message GetRecommendationsResponse {
   repeated Recommendation recommendations = 1;
+  string validation_status = 2;    // 'passed' | 'retried' | 'failed'
+  repeated string validation_errors = 3;
+  int32 retry_count = 4;
 }
 
 message Recommendation {
-  int64 stock_id = 1;
-  string ticker = 2;
-  string name_kr = 3;
-  double fit_score = 4;
-  string narrative = 5;
-  repeated string improvement_tags = 6;  // 노출 여부는 학습콘텐츠 담당자와 별도 협의
+  string stock_code = 1;
+  string name_kr = 2;
+  double fit_score = 3;
+  string narrative = 4;
+  repeated string improvement_tags = 5;
+  int64 price_snapshot = 6;
 }

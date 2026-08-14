@@ -1,4 +1,4 @@
-.PHONY: install lint test grpc run compose-up compose-down
+.PHONY: install lint test integration-up integration-test integration-down grpc run compose-up compose-down
 
 install:
 	uv sync
@@ -6,8 +6,17 @@ install:
 lint:
 	uv run ruff check src tests
 
-test:
-	uv run pytest
+test: grpc
+	uv run pytest -m "not integration"
+
+integration-up:
+	docker compose -f docker-compose.test.yml up -d --wait
+
+integration-test: grpc integration-up
+	TEST_DATABASE_URL=postgresql://advisory:advisory@localhost:5434/advisory_test uv run pytest -m integration
+
+integration-down:
+	docker compose -f docker-compose.test.yml down -v
 
 grpc:
 	./scripts/generate_grpc.sh

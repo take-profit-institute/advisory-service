@@ -1,0 +1,131 @@
+syntax = "proto3";
+
+package candle.stock.v1;
+
+option java_multiple_files = true;
+option java_package = "org.profit.candle.proto.stock.v1";
+
+import "candle/common/v1/common.proto";
+import "google/protobuf/timestamp.proto";
+
+// 종목 마스터(catalog) 서비스.
+// market-service(실시간 시세)와 분리 — stock-service는 종목 기준정보와 검색/페이징,
+// 데이터 부재 시 키움 OpenAPI fallback + DB 적재를 담당한다.
+
+enum MarketType {
+  MARKET_TYPE_UNSPECIFIED = 0;
+  KOSPI = 1;
+  KOSDAQ = 2;
+}
+
+enum ListingStatus {
+  LISTING_STATUS_UNSPECIFIED = 0;
+  LISTED = 1;
+  DELISTED = 2;
+  SUSPENDED = 3;
+}
+
+enum StockSort {
+  STOCK_SORT_UNSPECIFIED = 0;  // 기본: CODE_ASC
+  CODE_ASC = 1;
+  NAME_ASC = 2;
+  MARKET_CAP_DESC = 3;
+}
+
+// 응답이 DB에서 왔는지, 키움 fallback으로 채워졌는지 구분.
+enum DataSource {
+  DATA_SOURCE_UNSPECIFIED = 0;
+  DB = 1;
+  KIWOOM = 2;
+}
+
+message Stock {
+  string code = 1;                              // 종목코드 (6자리)
+  string name = 2;
+  MarketType market = 3;
+  string sector = 4;                            // 업종
+  int64 market_cap = 5;                         // 시가총액 (배치 갱신, 없으면 0)
+  int64 shares_outstanding = 6;
+  ListingStatus status = 7;
+  google.protobuf.Timestamp listed_at = 8;      // 상장일
+  candle.common.v1.Audit audit = 20;
+}
+
+// 재무지표는 소수 정밀도 보존을 위해 Decimal-string(common.Decimal 규약)으로 전달.
+message StockFinancials {
+  int64 revenue = 1;            // 매출액
+  int64 operating_profit = 2;   // 영업이익
+  int64 net_income = 3;         // 순이익
+  string per = 4;
+  string pbr = 5;
+  string roe = 6;               // %
+  string fiscal_period = 7;     // 예: "2025Q1"
+}
+
+message StockDetail {
+  Stock stock = 1;
+  StockFinancials financials = 2;
+  string description = 3;
+}
+
+// ── 조회 (BFF가 호출) ─────────────────────────────────────────────
+// 목록/검색: 페이지번호 + total (DB 전용 — 배치/스캐너가 선적재).
+//
+// CONVENTIONS §13 예외: 공통 page_token 커서 대신 page/size(offset)을 쓴다.
+//   사유 — 종목 카탈로그는 ~4천건·저빈도 변경이라 §13 자체 기준("대량·고빈도만 커서")에서
+//   offset 이 허용되며, 프론트 종목표는 페이지번호+total UX 가 필요하다.
+//   size 는 서버에서 최대 100 으로 강제하고, 정렬은 stock_code 보조키로 안정화한다.
+message SearchStocksRequest {
+  string query = 1;             // 코드/이름 부분검색 (선택)
+  MarketType market = 2;        // 필터 (선택)
+  string sector = 3;            // 필터 (선택)
+  ListingStatus status = 4;     // 기본 LISTED
+  StockSort sort = 5;
+  int32 page = 6;               // 0-based
+  int32 size = 7;               // 기본 20, 최대 100
+}
+
+message SearchStocksResponse {
+  repeated Stock stocks = 1;
+  int64 total_elements = 2;
+  int32 total_pages = 3;
+  int32 page = 4;
+  int32 size = 5;
+}
+
+// 상세: DB miss/stale 이고 allow_fallback 이면 키움 조회 후 적재하여 반환.
+message GetStockRequest {
+  string code = 1;
+  bool allow_fallback = 2;
+}
+
+message GetStockResponse {
+  StockDetail stock = 1;
+  DataSource source = 2;
+}
+
+message BatchGetStocksRequest {
+  repeated string codes = 1;
+}
+
+message BatchGetStocksResponse {
+  repeated Stock stocks = 1;
+}
+
+// ── 적재 (배치/관리자가 호출) ─────────────────────────────────────
+// 키움에서 시장별 전체 종목을 pull 하여 벌크 upsert.
+message SyncStocksRequest {
+  MarketType market = 1;        // UNSPECIFIED 면 전체 시장
+}
+
+message SyncStocksResponse {
+  int32 upserted = 1;
+  int32 total = 2;
+}
+
+service StockService {
+  rpc SearchStocks(SearchStocksRequest) returns (SearchStocksResponse);
+  rpc GetStock(GetStockRequest) returns (GetStockResponse);
+  rpc BatchGetStocks(BatchGetStocksRequest) returns (BatchGetStocksResponse);
+  rpc SyncStocks(SyncStocksRequest) returns (SyncStocksResponse);
+}

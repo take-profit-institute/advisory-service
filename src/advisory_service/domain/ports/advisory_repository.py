@@ -1,1 +1,0 @@
-"""Advisory persistence contract."""

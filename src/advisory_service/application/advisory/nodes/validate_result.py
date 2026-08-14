@@ -12,9 +12,13 @@ MAX_RETRY = 2
 
 async def validate_result(state: AdvisoryState) -> AdvisoryState:
     errors = []
+
+    if not state["recommendations"]:
+        errors.append("추천 가능한 종목이 없습니다.")
+
     for rec in state["recommendations"]:
         if not rec.narrative or len(rec.narrative) < 10:
-            errors.append(f"{rec.ticker}: narrative 생성 실패 또는 너무 짧음")
+            errors.append(f"{rec.stock_code}: narrative 생성 실패 또는 너무 짧음")
 
     passed = len(errors) == 0
     return {

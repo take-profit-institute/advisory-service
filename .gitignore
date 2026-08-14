@@ -369,6 +369,8 @@ $RECYCLE.BIN/
 
 # gRPC generated code — protoc가 빌드 시점마다 재생성하므로 커밋 불필요
 app/grpc_server/generated/
+src/advisory_service/transport/grpc/generated/*
+!src/advisory_service/transport/grpc/generated/.gitkeep
 
 # 환경변수 / 시크릿 — OpenAI API 키, DB 커넥션 정보 등
 .env

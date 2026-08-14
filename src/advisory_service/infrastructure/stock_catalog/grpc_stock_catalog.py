@@ -1,58 +1,143 @@
-"""
-application.ports.stock_catalog_synchronizer.StockCatalogSynchronizer 구현체 (부분 스텁).
+"""기존 candle.stock.v1 gRPC 계약을 사용하는 종목 동기화 어댑터."""
 
-Stock Service의 실제 gRPC 인터페이스(RPC 목록, 페이지네이션 방식,
-candles 접근 방법)는 아직 조사 중이라 (GitHub Issue: "Stock Service gRPC
-인터페이스 조사"), 이 파일은 조사 결과가 나오기 전까지 Protocol로
-인터페이스만 정의해 나머지 레이어 개발이 막히지 않도록 한다.
+import asyncio
+import time
+from collections.abc import Awaitable, Callable
 
-CONVENTIONS.md 인터페이스 분리 원칙에 따라 조회(StockMetricsReader)는
-PostgresStockCache가 별도로 담당하고, 이 클래스는 동기화(쓰기)만 담당한다.
-"""
-
-from typing import Protocol
+import grpc
 
 from advisory_service.infrastructure.persistence.repositories.postgres_stock_cache import (
     PostgresStockCache,
 )
+from advisory_service.transport.grpc.generated.candle.stock.v1 import (
+    stock_pb2,
+    stock_pb2_grpc,
+)
 
 
-class StockServiceGrpcClient(Protocol):
-    """실제로는 protoc로 생성된 StockServiceStub. 인터페이스만 먼저 정의해 개발 병행."""
+class RequestRateLimiter:
+    """여러 coroutine의 요청 시작 시점을 일정 간격으로 제한한다."""
 
-    async def list_stocks(
-        self, page_token: str | None = None
-    ) -> tuple[list[dict], str | None]:
-        """(종목 목록, 다음 페이지 토큰) 반환. 토큰이 None이면 마지막 페이지."""
-        ...
+    def __init__(self, requests_per_second: float):
+        if requests_per_second <= 0:
+            raise ValueError("requests_per_second must be positive")
+        self._interval = 1.0 / requests_per_second
+        self._lock = asyncio.Lock()
+        self._next_allowed = 0.0
 
-    async def get_financials(self, stock_id: int) -> dict | None:
-        """PER/PBR/ROE/fiscal_period 등 최신 스냅샷. 데이터 없으면 None."""
-        ...
+    async def wait(self) -> None:
+        async with self._lock:
+            now = time.monotonic()
+            delay = max(0.0, self._next_allowed - now)
+            if delay:
+                await asyncio.sleep(delay)
+            self._next_allowed = max(now, self._next_allowed) + self._interval
+
+
+class StockServiceGrpcClient:
+    def __init__(
+        self,
+        channel: grpc.aio.Channel,
+        *,
+        timeout_seconds: float = 5.0,
+        requests_per_second: float = 10.0,
+    ):
+        self._stub = stock_pb2_grpc.StockServiceStub(channel)
+        self._timeout_seconds = timeout_seconds
+        self._limiter = RequestRateLimiter(requests_per_second)
+
+    async def search_stocks(self, page: int, size: int) -> stock_pb2.SearchStocksResponse:
+        await self._limiter.wait()
+        return await self._stub.SearchStocks(
+            stock_pb2.SearchStocksRequest(
+                status=stock_pb2.LISTED,
+                sort=stock_pb2.CODE_ASC,
+                page=page,
+                size=size,
+            ),
+            timeout=self._timeout_seconds,
+        )
+
+    async def get_stock(self, stock_code: str) -> stock_pb2.GetStockResponse:
+        await self._limiter.wait()
+        return await self._stub.GetStock(
+            stock_pb2.GetStockRequest(code=stock_code, allow_fallback=False),
+            timeout=self._timeout_seconds,
+        )
 
 
 class GrpcStockCatalogSynchronizer:
-    def __init__(self, grpc_client: StockServiceGrpcClient, cache: PostgresStockCache):
+    """약 500종목을 page=100, 동시성=5, 최대 10RPS로 로컬 캐시에 동기화한다."""
+
+    def __init__(
+        self,
+        grpc_client: StockServiceGrpcClient,
+        cache: PostgresStockCache,
+        embed_fn: Callable[[str], Awaitable[list[float]]],
+        *,
+        page_size: int = 100,
+        concurrency: int = 5,
+    ):
         self._grpc_client = grpc_client
         self._cache = cache
+        self._embed_fn = embed_fn
+        self._page_size = min(max(page_size, 1), 100)
+        self._semaphore = asyncio.Semaphore(max(concurrency, 1))
 
     async def sync_all(self) -> int:
-        """
-        Stock Service 전체 종목을 페이지네이션하며 stocks_cache에 upsert.
-        financials_fiscal_period가 없거나 오래된 경우에도 일단 적재하되,
-        값 자체를 임의로 채우지 않고 synced_at으로 staleness를 추적한다.
-        """
         synced_count = 0
-        page_token: str | None = None
+        page = 0
 
         while True:
-            stocks, page_token = await self._grpc_client.list_stocks(page_token)
-            for stock in stocks:
-                financials = await self._grpc_client.get_financials(stock["stock_id"])
-                await self._cache.upsert(stock, financials)
-                synced_count += 1
+            response = await self._grpc_client.search_stocks(page, self._page_size)
+            if not response.stocks:
+                break
 
-            if page_token is None:
+            await asyncio.gather(*(self._sync_stock(stock) for stock in response.stocks))
+            synced_count += len(response.stocks)
+            page += 1
+            if page >= response.total_pages:
                 break
 
         return synced_count
+
+    async def _sync_stock(self, listed_stock: stock_pb2.Stock) -> None:
+        async with self._semaphore:
+            response = await self._grpc_client.get_stock(listed_stock.code)
+            detail = response.stock
+            stock = detail.stock if detail.HasField("stock") else listed_stock
+            financials = self._financials(detail)
+            stock_data = {
+                "stock_code": stock.code,
+                "name_kr": stock.name,
+                "sector": stock.sector or None,
+                "market": stock_pb2.MarketType.Name(stock.market),
+                "market_cap": stock.market_cap or None,
+            }
+            await self._cache.upsert(stock_data, financials)
+
+            content = detail.description.strip() or self._fallback_narrative(stock_data, financials)
+            embedding = await self._embed_fn(content)
+            await self._cache.upsert_narrative(stock.code, content, embedding)
+
+    @staticmethod
+    def _financials(detail: stock_pb2.StockDetail) -> dict | None:
+        if not detail.HasField("financials"):
+            return None
+        financials = detail.financials
+        return {
+            "per": financials.per or None,
+            "pbr": financials.pbr or None,
+            "roe": financials.roe or None,
+            "fiscal_period": financials.fiscal_period or None,
+        }
+
+    @staticmethod
+    def _fallback_narrative(stock: dict, financials: dict | None) -> str:
+        metrics = financials or {}
+        return (
+            f"{stock['name_kr']}({stock['stock_code']})는 "
+            f"{stock.get('market') or '국내'} 시장의 {stock.get('sector') or '미분류'} 종목이다. "
+            f"PER {metrics.get('per') or '미제공'}, PBR {metrics.get('pbr') or '미제공'}, "
+            f"ROE {metrics.get('roe') or '미제공'} 기준으로 분석한다."
+        )

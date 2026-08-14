@@ -3,14 +3,14 @@
 import grpc
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 
-# from advisory_service.transport.grpc.generated import advisory_pb2_grpc
+from advisory_service.transport.grpc.generated.advisory.v1 import advisory_pb2_grpc
 
 SERVICE_NAME = "candle.advisory.v1.AdvisoryService"
 
 
 async def serve(servicer, port: int = 50051) -> None:
     server = grpc.aio.server()
-    # advisory_pb2_grpc.add_AdvisoryServiceServicer_to_server(servicer, server)  # proto 확정 후 활성화
+    advisory_pb2_grpc.add_AdvisoryServiceServicer_to_server(servicer, server)
 
     # gRPC Health Checking Protocol 등록.
     # k8s(k3s) liveness/readiness probe가 이 프로토콜을 기대하는지는

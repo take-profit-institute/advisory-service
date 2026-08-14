@@ -1,0 +1,131 @@
+syntax = "proto3";
+
+package candle.stock.v1;
+
+option java_multiple_files = true;
+option java_package = "org.profit.candle.proto.stock.v1";
+
+import "google/protobuf/timestamp.proto";
+
+enum CandleInterval {
+  CANDLE_INTERVAL_UNSPECIFIED = 0;
+  MIN_1 = 1;
+  MIN_5 = 2;
+  DAY_1 = 3;
+  WEEK_1 = 4;
+  MONTH_1 = 5;
+}
+
+message Candle {
+  string code = 1;
+  CandleInterval interval = 2;
+  google.protobuf.Timestamp open_time = 3;
+  int64 open = 4;
+  int64 high = 5;
+  int64 low = 6;
+  int64 close = 7;
+  int64 volume = 8;
+  bool closed = 9;
+}
+
+message GetCandlesRequest {
+  string code = 1;
+  CandleInterval interval = 2;
+  int32 limit = 3;
+  google.protobuf.Timestamp to = 4;
+}
+
+message GetCandlesResponse {
+  repeated Candle candles = 1;
+}
+
+message BackfillCandlesRequest {
+  string code = 1;
+  CandleInterval interval = 2;
+  int32 count = 3;
+}
+
+message BackfillCandlesResponse {
+  int32 upserted = 1;
+}
+
+// batch 가 백필 전에 "이미 해당 일봉이 있는 종목"을 페이지 단위로 거르기 위한 경량 조회.
+// 요청 codes 중 DB 에 해당 interval/date 캔들이 있는 code 만 반환한다. 백필하지 않는다.
+message FindExistingCandleCodesRequest {
+  repeated string codes = 1;
+  CandleInterval interval = 2;                 // 기본 DAY_1
+  google.protobuf.Timestamp date = 3;          // 조회할 캔들의 open_time
+}
+
+message FindExistingCandleCodesResponse {
+  repeated string codes = 1;
+}
+
+// 장 마감 후 batch(stock.close-daily.v1)가 호출한다. 해당 거래일의 미확정 일봉을 확정(closed=true)하고
+// 종가 이벤트를 발행한다. 이미 확정된 캔들은 건너뛰므로 재실행에 안전하다.
+message CloseDailyCandlesRequest {
+  string trade_date = 1;       // YYYY-MM-DD (KST 거래일)
+  string idempotency_key = 2;  // batch execution_id 등 (재실행 추적)
+}
+
+message CloseDailyCandlesResponse {
+  // 이번 호출에서 새로 기록한 종가 이벤트 수. 재실행 시 이미 기록된 종목은 세지 않으므로
+  // 정상 재실행에서는 0 이 나올 수 있다(멱등).
+  int32 closed_count = 1;
+}
+
+// 리스트 화면(관심종목/랭킹)의 미니 차트용 경량 조회. GetCandles 를 종목마다 부르는 대신
+// 여러 종목의 최근 종가 시퀀스만 한 번에 받는다. DB 에 있는 데이터만 반환하며 백필하지 않는다.
+message GetSparklinesRequest {
+  repeated string codes = 1;
+  CandleInterval interval = 2;  // 기본 DAY_1
+  int32 points = 3;             // 기본 10 (약 2주 영업일)
+}
+
+message Sparkline {
+  string code = 1;
+  repeated int64 closes = 2;                    // 오래된 -> 최신 종가
+  google.protobuf.Timestamp last_open_time = 3; // 마지막(최신) 캔들 시각
+}
+
+message GetSparklinesResponse {
+  repeated Sparkline sparklines = 1;
+}
+
+// 종목 + 기준일자 -> 그 일자 직전(exclusive)의 마지막 일봉 종가(= 전 거래일 종가).
+message GetPreviousCloseRequest {
+  string code = 1;
+  google.protobuf.Timestamp date = 2;  // 이 시각보다 앞선 가장 최근 일봉을 찾는다
+}
+
+message GetPreviousCloseResponse {
+  string code = 1;
+  int64 prev_close = 2;
+  google.protobuf.Timestamp prev_open_time = 3;  // 종가가 속한 캔들 시각(= 전 거래일)
+}
+
+// 종목 통계(52주 고저 등) — 상세 화면 헤더용. candles(일봉)에서 집계한다.
+// DB 에 있는 데이터만 집계하며 백필하지 않는다. 데이터가 없으면 0/미설정으로 응답한다(예외 아님).
+message GetPriceStatsRequest {
+  string code = 1;
+  int32 window_days = 2;  // 기본 365 (약 52주)
+}
+
+message GetPriceStatsResponse {
+  string code = 1;
+  int64 high = 2;                       // window 내 최고가 (= 52주 최고)
+  int64 low = 3;                        // window 내 최저가 (= 52주 최저)
+  int64 latest_close = 4;               // 최근 일봉 종가
+  int64 latest_volume = 5;              // 최근 일봉 거래량
+  google.protobuf.Timestamp as_of = 6;  // 최근 일봉 시각 (데이터 없으면 미설정)
+}
+
+service ChartService {
+  rpc GetCandles(GetCandlesRequest) returns (GetCandlesResponse);
+  rpc GetSparklines(GetSparklinesRequest) returns (GetSparklinesResponse);
+  rpc GetPreviousClose(GetPreviousCloseRequest) returns (GetPreviousCloseResponse);
+  rpc GetPriceStats(GetPriceStatsRequest) returns (GetPriceStatsResponse);
+  rpc FindExistingCandleCodes(FindExistingCandleCodesRequest) returns (FindExistingCandleCodesResponse);
+  rpc BackfillCandles(BackfillCandlesRequest) returns (BackfillCandlesResponse);
+  rpc CloseDailyCandles(CloseDailyCandlesRequest) returns (CloseDailyCandlesResponse);
+}
