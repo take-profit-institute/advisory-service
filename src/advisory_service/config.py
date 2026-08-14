@@ -15,4 +15,5 @@ class Settings(BaseSettings):
     stock_sync_enabled: bool = True
     stock_sync_interval_seconds: int = 86_400
     stock_grpc_timeout_seconds: float = 5.0
+    volatility_cache_ttl_seconds: int = 86_400
     grpc_port: int = 50051

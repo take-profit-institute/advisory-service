@@ -6,6 +6,9 @@ domain/application 계층은 이 파일의 존재를 모른다. 오직 이 파�
 infrastructure 구현체의 구체 타입을 알고 조립한다.
 """
 
+from dataclasses import dataclass
+
+import asyncpg
 import grpc
 import structlog
 from openai import AsyncOpenAI
@@ -37,7 +40,21 @@ from advisory_service.infrastructure.stock_catalog.grpc_stock_metrics_reader imp
 log = structlog.get_logger()
 
 
-async def build_application(settings: Settings):
+@dataclass
+class Application:
+    use_case: GenerateAdvisoryUseCase
+    stock_catalog_synchronizer: GrpcStockCatalogSynchronizer
+    pool: asyncpg.Pool
+    stock_channel: grpc.aio.Channel
+    openai_client: AsyncOpenAI
+
+    async def close(self) -> None:
+        await self.stock_channel.close()
+        await self.openai_client.close()
+        await self.pool.close()
+
+
+async def build_application(settings: Settings) -> Application:
     pool = await create_pool(settings)
     openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
     stock_channel = grpc.aio.insecure_channel(settings.stock_service_grpc_target)
@@ -68,6 +85,7 @@ async def build_application(settings: Settings):
         timeout_seconds=settings.stock_grpc_timeout_seconds,
         requests_per_second=settings.stock_sync_requests_per_second,
         concurrency=settings.stock_sync_concurrency,
+        volatility_cache_ttl_seconds=settings.volatility_cache_ttl_seconds,
     )
 
     stock_search = HybridStockSearch(pool, embed_fn)
@@ -83,4 +101,10 @@ async def build_application(settings: Settings):
     use_case = GenerateAdvisoryUseCase(graph=graph, advisory_repository=advisory_repository)
 
     log.info("application_bootstrapped")
-    return use_case, stock_catalog_synchronizer
+    return Application(
+        use_case=use_case,
+        stock_catalog_synchronizer=stock_catalog_synchronizer,
+        pool=pool,
+        stock_channel=stock_channel,
+        openai_client=openai_client,
+    )

@@ -1,28 +1,47 @@
-// advisory-service가 다른 Candle 내부 서비스(BFF 등)에 노출하는 gRPC 계약.
-//
-// 초안 단계 — 필드/서비스명은 팀장 및 BFF 담당자와 협의 후 확정 필요.
-// (Candle 컨벤션: 내부 서비스 간 통신은 gRPC, REST는 웹앱-BFF 구간만)
+// advisory-service가 Candle 내부 서비스(BFF 등)에 노출하는 v1 gRPC 계약.
+// 사용자 ID는 인증 계층이 검증한 x-user-id metadata로 전달한다.
 
 syntax = "proto3";
 
 package candle.advisory.v1;
 
 service AdvisoryService {
-  // 사용자 투자성향 기반 종목 추천 조회
+  // 사용자 투자성향과 자연어 질의를 기반으로 최대 5개 종목을 추천한다.
   rpc GetRecommendations(GetRecommendationsRequest) returns (GetRecommendationsResponse);
 }
 
+enum RiskTolerance {
+  RISK_TOLERANCE_UNSPECIFIED = 0;
+  RISK_TOLERANCE_CONSERVATIVE = 1;
+  RISK_TOLERANCE_MODERATE = 2;
+  RISK_TOLERANCE_AGGRESSIVE = 3;
+}
+
+enum InvestmentHorizon {
+  INVESTMENT_HORIZON_UNSPECIFIED = 0;
+  INVESTMENT_HORIZON_SHORT = 1;
+  INVESTMENT_HORIZON_MID = 2;
+  INVESTMENT_HORIZON_LONG = 3;
+}
+
+enum ValidationStatus {
+  VALIDATION_STATUS_UNSPECIFIED = 0;
+  VALIDATION_STATUS_PASSED = 1;
+  VALIDATION_STATUS_RETRIED = 2;
+  VALIDATION_STATUS_FAILED = 3;
+}
+
 message GetRecommendationsRequest {
-  // 사용자 ID는 신뢰 가능한 x-user-id gRPC metadata에서 읽는다.
-  string risk_tolerance = 1;       // 'conservative' | 'moderate' | 'aggressive'
-  string investment_horizon = 2;   // 'short' | 'mid' | 'long'
+  RiskTolerance risk_tolerance = 1;
+  InvestmentHorizon investment_horizon = 2;
   repeated string preferred_sectors = 3;
+  // 비어 있으면 risk_tolerance, investment_horizon, preferred_sectors로 검색어를 만든다.
   string free_text_query = 4;
 }
 
 message GetRecommendationsResponse {
   repeated Recommendation recommendations = 1;
-  string validation_status = 2;    // 'passed' | 'retried' | 'failed'
+  ValidationStatus validation_status = 2;
   repeated string validation_errors = 3;
   int32 retry_count = 4;
 }
@@ -30,8 +49,9 @@ message GetRecommendationsResponse {
 message Recommendation {
   string stock_code = 1;
   string name_kr = 2;
-  double fit_score = 3;
+  double fit_score = 3;             // 0.0 ~ 1.0
   string narrative = 4;
   repeated string improvement_tags = 5;
+  // 추천 시점 가격. 가격이 없으면 proto3 기본값 0을 반환한다.
   int64 price_snapshot = 6;
 }

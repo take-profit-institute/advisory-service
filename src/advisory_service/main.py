@@ -1,6 +1,7 @@
 """서비스 진입점."""
 
 import asyncio
+import signal
 
 import structlog
 
@@ -29,22 +30,35 @@ def _configure_logging() -> None:
 async def _amain() -> None:
     _configure_logging()
     settings = Settings()  # type: ignore[call-arg]  # values are loaded from environment
-    use_case, stock_catalog_synchronizer = await build_application(settings)
-    servicer = AdvisoryServicer(use_case)
+    application = await build_application(settings)
+    servicer = AdvisoryServicer(application.use_case)
+    shutdown_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for signal_number in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(signal_number, shutdown_event.set)
+        except NotImplementedError:  # pragma: no cover - Windows fallback
+            pass
+
     sync_task = None
     if settings.stock_sync_enabled:
         sync_task = asyncio.create_task(
             _run_stock_sync_loop(
-                stock_catalog_synchronizer,
+                application.stock_catalog_synchronizer,
                 settings.stock_sync_interval_seconds,
             )
         )
     try:
-        await serve(servicer, port=settings.grpc_port)
+        await serve(
+            servicer,
+            port=settings.grpc_port,
+            shutdown_event=shutdown_event,
+        )
     finally:
         if sync_task is not None:
             sync_task.cancel()
             await asyncio.gather(sync_task, return_exceptions=True)
+        await application.close()
 
 
 async def _run_stock_sync_loop(synchronizer, interval_seconds: int) -> None:

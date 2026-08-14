@@ -97,6 +97,40 @@ gRPC GetRecommendations
 서버는 `candle.advisory.v1.AdvisoryService`와 전체 서버(`""`)에 대한 표준 gRPC
 health status도 제공한다.
 
+### AdvisoryService v1 계약
+
+`proto/advisory/v1/advisory.proto`를 BFF 코드 생성의 기준 계약으로 사용한다.
+
+```proto
+rpc GetRecommendations(GetRecommendationsRequest)
+    returns (GetRecommendationsResponse);
+```
+
+요청 시 UUID 형식의 `x-user-id` metadata가 필수다. `risk_tolerance`도 반드시
+지정해야 하며 `investment_horizon`은 `UNSPECIFIED`를 허용한다.
+
+```text
+risk_tolerance:
+  RISK_TOLERANCE_CONSERVATIVE
+  RISK_TOLERANCE_MODERATE
+  RISK_TOLERANCE_AGGRESSIVE
+
+investment_horizon:
+  INVESTMENT_HORIZON_UNSPECIFIED
+  INVESTMENT_HORIZON_SHORT
+  INVESTMENT_HORIZON_MID
+  INVESTMENT_HORIZON_LONG
+```
+
+입력 제한은 다음과 같다.
+
+- `preferred_sectors`: 최대 10개, 각 1~50자
+- `free_text_query`: 최대 500자
+- 빈 `free_text_query`: 투자 성향, 기간, 선호 업종으로 서버가 기본 검색어 생성
+
+응답의 `validation_status`는 `PASSED`, `RETRIED`, `FAILED` enum이며 추천 결과는
+최대 5개다. v1 계약을 변경할 때는 기존 필드 번호를 재사용하지 않는다.
+
 ## 종목 데이터와 로컬 캐시
 
 종목 원본의 Source of Truth는 Stock Service다. advisory-service는
@@ -151,6 +185,7 @@ cp .env.example .env
 | `STOCK_SYNC_REQUESTS_PER_SECOND` | 초당 최대 요청 수 | `10` |
 | `STOCK_SYNC_INTERVAL_SECONDS` | 전체 동기화 반복 간격 | `86400` |
 | `STOCK_GRPC_TIMEOUT_SECONDS` | Stock Service RPC timeout | `5` |
+| `VOLATILITY_CACHE_TTL_SECONDS` | 계산된 변동성 재사용 시간 | `86400` |
 | `GRPC_PORT` | Advisory gRPC 포트 | `50051` |
 
 로컬 Compose에서 Stock Service를 함께 실행하지 않는다면 다음처럼 설정한다.

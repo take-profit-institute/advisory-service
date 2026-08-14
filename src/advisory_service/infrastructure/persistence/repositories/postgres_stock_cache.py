@@ -43,7 +43,8 @@ class PostgresStockCache:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT stock_code, per, pbr, roe, volatility_90d, latest_close
+                SELECT stock_code, per, pbr, roe, volatility_90d,
+                       volatility_calculated_at, latest_close
                 FROM stocks_cache
                 WHERE stock_code = ANY($1::varchar[])
                 """,
@@ -64,7 +65,8 @@ class PostgresStockCache:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT stock_code, per, pbr, roe, volatility_90d, latest_close
+                SELECT stock_code, per, pbr, roe, volatility_90d,
+                       volatility_calculated_at, latest_close
                 FROM stocks_cache
                 WHERE stock_code = ANY($1::varchar[])
                 """,

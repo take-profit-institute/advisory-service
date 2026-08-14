@@ -12,12 +12,18 @@ services:
     volumes:
       - advisory_pgdata:/var/lib/postgresql/data
       - ./db/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U advisory -d advisory"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
 
   advisory-service:
     build: .
     env_file: .env
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     ports:
       - "50051:50051"
 

@@ -16,7 +16,11 @@ from advisory_service.domain.models.investor_profile import (
 
 
 class FakeStockSearch:
+    def __init__(self):
+        self.query_text = None
+
     async def hybrid_search(self, query_text, top_k=20):
+        self.query_text = query_text
         return [
             RetrievedCandidate(
                 stock_code="005930", name_kr="삼성전자",
@@ -40,8 +44,9 @@ class FakeNarrativeGenerator:
 
 @pytest.mark.asyncio
 async def test_advisory_graph_end_to_end_with_fakes():
+    stock_search = FakeStockSearch()
     graph = build_advisory_graph(
-        stock_search=FakeStockSearch(),
+        stock_search=stock_search,
         stock_metrics_reader=FakeStockMetricsReader(),
         narrative_generator=FakeNarrativeGenerator(),
     )
@@ -65,3 +70,30 @@ async def test_advisory_graph_end_to_end_with_fakes():
     assert result["validation_passed"] is True
     assert len(result["recommendations"]) == 1
     assert result["recommendations"][0].stock_code == "005930"
+
+
+@pytest.mark.asyncio
+async def test_advisory_graph_builds_query_when_free_text_is_empty():
+    stock_search = FakeStockSearch()
+    graph = build_advisory_graph(
+        stock_search=stock_search,
+        stock_metrics_reader=FakeStockMetricsReader(),
+        narrative_generator=FakeNarrativeGenerator(),
+    )
+    initial_state = {
+        "investor_profile": InvestorProfile(
+            user_id="11111111-1111-1111-1111-111111111111",
+            risk_tolerance=RiskTolerance.CONSERVATIVE,
+            preferred_sectors=["반도체"],
+        ),
+        "retrieved_candidates": [],
+        "scored_candidates": [],
+        "recommendations": [],
+        "validation_passed": False,
+        "validation_errors": [],
+        "retry_count": 0,
+    }
+
+    await graph.ainvoke(initial_state)
+
+    assert stock_search.query_text == "변동성이 낮고 안정적인 반도체 종목"

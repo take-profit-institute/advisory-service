@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 
 import grpc
 
@@ -28,12 +29,18 @@ class GrpcBackedStockMetricsReader:
         timeout_seconds: float = 5.0,
         requests_per_second: float = 10.0,
         concurrency: int = 5,
+        volatility_cache_ttl_seconds: int = 86_400,
     ):
         self._stub = chart_pb2_grpc.ChartServiceStub(channel)
         self._cache = cache
         self._timeout_seconds = timeout_seconds
         self._limiter = RequestRateLimiter(requests_per_second)
         self._semaphore = asyncio.Semaphore(max(concurrency, 1))
+        self._volatility_cache_ttl = timedelta(
+            seconds=max(volatility_cache_ttl_seconds, 0)
+        )
+        # 동일 프로세스에서 같은 종목의 cache miss가 겹쳐도 GetCandles는 한 번만 호출한다.
+        self._refresh_locks: dict[str, asyncio.Lock] = {}
 
     async def get_metrics(self, stock_code: str) -> StockMetrics | None:
         return (await self.get_metrics_many([stock_code])).get(stock_code)
@@ -41,19 +48,12 @@ class GrpcBackedStockMetricsReader:
     async def get_metrics_many(
         self, stock_codes: Sequence[str]
     ) -> dict[str, StockMetrics]:
-        cached = await self._cache.get_metrics_many(stock_codes)
-        missing = [code for code in stock_codes if code not in cached]
-        if not missing:
-            return cached
-
-        raw = await self._cache.get_metric_values_many(missing)
-        refreshed = await asyncio.gather(
-            *(self._build_metrics(code, raw.get(code)) for code in missing)
+        unique_codes = list(dict.fromkeys(stock_codes))
+        raw = await self._cache.get_metric_values_many(unique_codes)
+        resolved = await asyncio.gather(
+            *(self._build_metrics(code, raw.get(code)) for code in unique_codes)
         )
-        cached.update(
-            {code: metrics for code, metrics in refreshed if metrics is not None}
-        )
-        return cached
+        return {code: metrics for code, metrics in resolved if metrics is not None}
 
     async def _build_metrics(
         self, stock_code: str, values: dict | None
@@ -61,24 +61,60 @@ class GrpcBackedStockMetricsReader:
         if values is None or any(values.get(key) is None for key in ("per", "pbr", "roe")):
             return stock_code, None
 
-        cached_volatility = values.get("volatility_90d")
-        latest_close: float | None
-        if cached_volatility is None:
+        cached = self._fresh_cached_metrics(values)
+        if cached is not None:
+            return stock_code, cached
+
+        lock = self._refresh_locks.setdefault(stock_code, asyncio.Lock())
+        async with lock:
+            # 다른 요청이 lock을 기다리는 동안 갱신했을 수 있으므로 DB를 다시 확인한다.
+            latest_values = (
+                await self._cache.get_metric_values_many([stock_code])
+            ).get(stock_code)
+            if latest_values is None or any(
+                latest_values.get(key) is None for key in ("per", "pbr", "roe")
+            ):
+                return stock_code, None
+
+            cached = self._fresh_cached_metrics(latest_values)
+            if cached is not None:
+                return stock_code, cached
+
             market_metrics = await self._fetch_market_metrics(stock_code)
             if market_metrics is None:
                 return stock_code, None
             volatility, latest_close = market_metrics
-            await self._cache.update_market_metrics(
-                stock_code, volatility, latest_close
-            )
-        else:
-            volatility = float(cached_volatility)
-            raw_latest_close = values.get("latest_close")
-            latest_close = (
-                float(raw_latest_close) if raw_latest_close is not None else None
+            await self._cache.update_market_metrics(stock_code, volatility, latest_close)
+
+            return stock_code, self._to_metrics(
+                latest_values,
+                volatility=volatility,
+                latest_close=latest_close,
             )
 
-        return stock_code, StockMetrics(
+    def _fresh_cached_metrics(self, values: dict) -> StockMetrics | None:
+        volatility = values.get("volatility_90d")
+        calculated_at = values.get("volatility_calculated_at")
+        if volatility is None or calculated_at is None:
+            return None
+        if calculated_at.tzinfo is None:
+            calculated_at = calculated_at.replace(tzinfo=UTC)
+        if datetime.now(UTC) - calculated_at > self._volatility_cache_ttl:
+            return None
+        return self._to_metrics(
+            values,
+            volatility=float(volatility),
+            latest_close=values.get("latest_close"),
+        )
+
+    @staticmethod
+    def _to_metrics(
+        values: dict,
+        *,
+        volatility: float,
+        latest_close,
+    ) -> StockMetrics:
+        return StockMetrics(
             per=float(values["per"]),
             pbr=float(values["pbr"]),
             roe=float(values["roe"]),

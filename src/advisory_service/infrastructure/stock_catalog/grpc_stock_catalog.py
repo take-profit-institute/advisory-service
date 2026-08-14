@@ -67,7 +67,7 @@ class StockServiceGrpcClient:
 
 
 class GrpcStockCatalogSynchronizer:
-    """약 500종목을 page=100, 동시성=5, 최대 10RPS로 로컬 캐시에 동기화한다."""
+    """전체 상장 종목을 페이지 조회해 제한된 동시성으로 로컬 캐시에 동기화한다."""
 
     def __init__(
         self,

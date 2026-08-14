@@ -6,9 +6,10 @@ from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 from advisory_service.transport.grpc.generated.advisory.v1 import advisory_pb2_grpc
 
 SERVICE_NAME = "candle.advisory.v1.AdvisoryService"
+GRACEFUL_SHUTDOWN_SECONDS = 5
 
 
-async def serve(servicer, port: int = 50051) -> None:
+def create_server(servicer, port: int = 50051):
     server = grpc.aio.server()
     advisory_pb2_grpc.add_AdvisoryServiceServicer_to_server(servicer, server)
 
@@ -20,6 +21,19 @@ async def serve(servicer, port: int = 50051) -> None:
     health_servicer.set(SERVICE_NAME, health_pb2.HealthCheckResponse.SERVING)
     health_servicer.set("", health_pb2.HealthCheckResponse.SERVING)  # 전체 서버 상태
 
-    server.add_insecure_port(f"[::]:{port}")
+    bound_port = server.add_insecure_port(f"[::]:{port}")
+    return server, health_servicer, bound_port
+
+
+async def serve(servicer, port: int = 50051, shutdown_event=None) -> None:
+    server, health_servicer, _ = create_server(servicer, port)
     await server.start()
-    await server.wait_for_termination()
+    try:
+        if shutdown_event is None:
+            await server.wait_for_termination()
+        else:
+            await shutdown_event.wait()
+    finally:
+        health_servicer.set(SERVICE_NAME, health_pb2.HealthCheckResponse.NOT_SERVING)
+        health_servicer.set("", health_pb2.HealthCheckResponse.NOT_SERVING)
+        await server.stop(GRACEFUL_SHUTDOWN_SECONDS)
