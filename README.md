@@ -1,131 +1,271 @@
 # Candle Advisory Service
 
-Candle 프로젝트 — 사용자 투자성향 기반 종목 추천 마이크로서비스.
-헥사고날 아키텍처(포트-어댑터)로 구성되어 있다.
+Candle 사용자의 투자 성향과 질의를 바탕으로 종목을 검색하고, 적합도 점수와
+추천 근거를 반환하는 Python gRPC 마이크로서비스다.
 
-## 디렉토리 구조
+- Python 3.12
+- uv
+- gRPC (`grpc.aio`)
+- LangGraph
+- PostgreSQL 16 + pgvector + pg_trgm
+- OpenAI `text-embedding-3-small` / `gpt-4o-mini`
 
-```
-src/advisory_service/
-├── domain/            # 핵심 비즈니스 로직. 어떤 외부 프레임워크/DB/LLM도 모른다.
-│   ├── models/         # InvestorProfile, ScoredCandidate, AdvisoryRecommendation, AdvisoryResult 등
-│   └── services/         # fit_score.py — 순수함수 스코어링
-├── application/        # 유스케이스 오케스트레이션 (LangGraph)
-│   ├── ports/            # StockSearchPort, StockMetricsReader, StockCatalogSynchronizer,
-│   │                       NarrativeGeneratorPort, AdvisoryRepository
-│   └── advisory/          # state.py, nodes/, graph.py, use_case.py(GenerateAdvisoryUseCase)
-├── infrastructure/      # 포트의 실제 구현체 (외부 세계와 맞닿는 부분)
-│   ├── persistence/       # asyncpg, PostgreSQL repository
-│   ├── retrieval/          # pgvector + pg_trgm 하이브리드 검색 + RRF
-│   ├── llm/                 # OpenAI(gpt-4o-mini) narrative 생성
-│   └── stock_catalog/        # 기존 StockService/ChartService gRPC 클라이언트
-├── transport/           # 외부에 노출하는 인터페이스 (gRPC 서버, GenerateAdvisoryUseCase만 호출)
-├── bootstrap.py          # Composition Root — 포트에 구현체를 주입하는 유일한 지점
-├── config.py              # pydantic-settings 환경변수
-└── main.py                 # 진입점
-```
+## 아키텍처
 
-**참고**: `AdvisoryRepository` 포트는 domain이 아니라 application/ports에 둔다.
-"도메인이 요구하는 계약"이라기보다 "GenerateAdvisoryUseCase가 결과를 어디에
-내보낼지"를 정의하는 출력 포트에 가깝기 때문이다.
+헥사고날 아키텍처(포트-어댑터)를 사용한다.
 
-## 의존성 방향
-
-```
+```text
 transport → application → domain
-                ↑              ↑
-         infrastructure ───────┘
+                ↑            ↑
+         infrastructure ─────┘
 ```
 
-domain은 아무것도 참조하지 않는다. application은 domain과 자신의 ports만 참조한다.
-infrastructure가 application/domain의 ports를 구현한다. transport와 bootstrap이
-맨 바깥에서 이 모든 걸 조립한다.
+- `domain`은 DB, gRPC, LLM과 같은 외부 기술을 참조하지 않는다.
+- `application`은 유스케이스와 포트를 정의하고 LangGraph 실행을 조율한다.
+- `infrastructure`는 application 포트의 PostgreSQL, OpenAI, Stock Service 구현체를 제공한다.
+- `transport`는 외부 gRPC 요청을 application use case로 전달한다.
+- `bootstrap.py`가 구체 구현체를 조립하는 Composition Root다.
 
-## 종목 데이터 소유권 — Stock Service가 Source of Truth
+`AdvisoryRepository`는 도메인 모델 자체의 계약이 아니라 유스케이스의 출력
+포트이므로 `application/ports`에 둔다. 종목 조회와 전체 동기화도 소비자가
+다르므로 각각 `StockMetricsReader`, `StockCatalogSynchronizer`로 분리한다.
 
-advisory-service는 종목 원본 데이터를 소유하지 않는다. Stock Service가
-`stocks` / `stock_financials` / `candles`로 종목 마스터·재무정보·일봉을
-관리하고, advisory-service는 기존 `candle.stock.v1`의 `SearchStocks`,
-`GetStock`, `GetCandles` RPC로 읽어와 로컬 스냅샷에 동기화한다.
+## 디렉터리 구조
 
-`stocks_cache`는 advisory-service 자신의 필요(pg_trgm 인덱스, 스코어링
-계산)를 위해 만드는 테이블이지, 학습콘텐츠 서비스나 다른 서비스를 위한
-것이 아니다.
+```text
+advisory-service/
+├── db/
+│   ├── schema.sql                         # 테이블, pgvector/pg_trgm 인덱스
+│   └── seed.sql                           # 로컬 개발용 TEST001~TEST005
+├── proto/
+│   ├── advisory/v1/advisory.proto         # 외부에 노출하는 AdvisoryService 계약
+│   └── candle/                            # Stock/Common Service 계약
+├── scripts/
+│   └── generate_grpc.sh                   # protobuf Python 코드 생성
+├── src/advisory_service/
+│   ├── domain/
+│   │   ├── models/                        # 투자자 프로필, 검색/추천 모델
+│   │   └── services/                      # 적합도 점수, 변동성 순수함수
+│   ├── application/
+│   │   ├── ports/                         # 외부 의존성 인터페이스
+│   │   └── advisory/
+│   │       ├── nodes/                     # LangGraph 노드
+│   │       ├── graph.py                   # 그래프 구성
+│   │       ├── state.py                   # 그래프 상태
+│   │       └── use_case.py                # GenerateAdvisoryUseCase
+│   ├── infrastructure/
+│   │   ├── llm/                           # OpenAI 추천 근거 생성
+│   │   ├── persistence/                   # asyncpg pool 및 PostgreSQL repository
+│   │   ├── retrieval/                     # vector + trgm + RRF 검색
+│   │   └── stock_catalog/                 # Stock/Chart Service gRPC 연동
+│   ├── transport/grpc/
+│   │   ├── generated/                     # protoc 생성 코드(버전 관리 제외)
+│   │   ├── server.py                      # gRPC/health 서버 시작
+│   │   └── servicer.py                    # RPC 요청·응답 매핑
+│   ├── bootstrap.py                       # 의존성 조립
+│   ├── config.py                          # pydantic-settings 환경변수
+│   └── main.py                            # 동기 CLI 진입점 + 비동기 실행
+├── tests/
+│   ├── unit/                              # domain/application/infrastructure 단위 테스트
+│   ├── contract/grpc/                     # gRPC servicer 계약 테스트
+│   └── integration/persistence/           # 실제 PostgreSQL repository 테스트
+├── docker-compose.yml                     # 로컬 PostgreSQL + 애플리케이션
+├── docker-compose.test.yml                # 격리된 통합 테스트 DB
+├── Dockerfile
+├── Makefile
+├── pyproject.toml
+└── uv.lock
+```
 
-### 실제 가용 필드 (Stock Service 조사 결과 반영)
+## 추천 요청 흐름
 
-| 필드 | 상태 |
+```text
+gRPC GetRecommendations
+  → AdvisoryServicer
+  → GenerateAdvisoryUseCase
+  → build_profile
+  → retrieve_candidates (pgvector + pg_trgm + RRF)
+  → score_candidates (PER/PBR/ROE/90일 변동성)
+  → generate_narrative (OpenAI)
+  → validate_result (실패 시 최대 1회 재시도)
+  → PostgreSQL 저장
+  → gRPC 응답
+```
+
+내부 서비스 간 통신은 gRPC를 사용한다. 사용자 ID는 request body가 아니라 인증된
+`x-user-id` metadata에서 읽고, 종목 식별자는 Stock Service의 `code`를 사용한다.
+서버는 `candle.advisory.v1.AdvisoryService`와 전체 서버(`""`)에 대한 표준 gRPC
+health status도 제공한다.
+
+## 종목 데이터와 로컬 캐시
+
+종목 원본의 Source of Truth는 Stock Service다. advisory-service는
+`SearchStocks`, `GetStock`, `GetCandles` RPC로 다음 데이터를 가져와 자체 검색과
+스코어링에 필요한 로컬 스냅샷만 저장한다.
+
+| 필드 | 처리 방식 |
 |---|---|
-| 종목코드/명/시장/업종/시총 | Stock Service가 배치로 정기 동기화. 안정적 |
-| PER / PBR / ROE | `GetStock(code)`로 하루 1회 동기화. `financials_fiscal_period`로 staleness 추적 |
-| 배당수익률 / 부채비율 | **필드 자체가 없음.** DART Open API 연동 필요 여부를 Stock Service팀과 협의 (1차 고도화 후보) |
-| 변동성(volatility_90d) | Stock Service 미제공. `candles`(일봉) 원본을 받아 **advisory-service가 직접 계산** (연율화된 일별 로그수익률 표준편차) |
+| 종목코드, 종목명, 시장, 업종, 시가총액 | Stock Service에서 전체 동기화 |
+| PER, PBR, ROE | `GetStock(code)`로 동기화하고 `financials_fiscal_period` 기록 |
+| 90일 변동성 | 필요할 때 `GetCandles` 일봉으로 계산하고 계산 시각 기록 |
+| 배당수익률, 부채비율 | 현재 Stock Service 계약에 없어 MVP에서 제외 |
 
-## gRPC — Candle 내부 통신 컨벤션
+`stocks_cache`는 원본 마스터가 아니다. 추천 요청은 우선 로컬 캐시를 읽으며,
+변동성이 없는 후보만 Stock/Chart Service에서 보충한다. 재무지표나 변동성이
+결측인 종목은 값을 0으로 간주하지 않고 점수 계산 후보에서 제외한다.
 
-내부 서비스 간 통신은 gRPC, REST는 웹앱-BFF 구간에서만 사용하는 것이 Candle
-컨벤션이다. 사용자 식별자는 request가 아닌 인증된 `x-user-id` metadata를
-신뢰하며, 종목 식별자는 기존 Stock 계약의 `code`를 사용한다.
+전체 종목을 약 4,000개로 가정하면 초기 동기화는 `SearchStocks(size=100)` 약
+40회와 종목별 `GetStock` 약 4,000회다. 기본값은 동시성 5, 최대 10 RPS이며
+네트워크 지연과 재시도를 포함해 약 7~10분을 예상한다. 현재 구현은 서비스 시작
+직후 동기화를 한 번 실행하고 이후 `STOCK_SYNC_INTERVAL_SECONDS` 간격으로 반복한다.
+
+## 데이터베이스
+
+`db/schema.sql`은 다음 테이블을 생성한다.
+
+- `stocks_cache`: 동기화한 종목·재무·변동성 스냅샷
+- `stock_narratives`: 검색 문서와 1,536차원 임베딩
+- `user_profiles`: 투자 성향과 질의
+- `recommendations`: 추천 결과, 점수, 가격 스냅샷과 검증 상태
+
+PostgreSQL에는 `vector`, `pg_trgm` 확장이 필요하다. 벡터 검색에는 HNSW,
+종목명·종목코드·문서 키워드 검색에는 GIN trigram 인덱스를 사용한다. 두 검색
+순위는 RRF(`k=60`)로 합친다.
+
+## 환경 설정
 
 ```bash
-make grpc   # proto -> src/advisory_service/transport/grpc/generated/ 코드 생성
+cp .env.example .env
 ```
 
-## 로컬 개발
+주요 환경변수는 다음과 같다.
+
+| 변수 | 설명 | 기본값/예시 |
+|---|---|---|
+| `DATABASE_URL` | PostgreSQL 연결 문자열 | Compose에서는 `postgresql://advisory:advisory@postgres:5432/advisory` |
+| `OPENAI_API_KEY` | 임베딩 및 추천 근거 생성용 키 | 필수 |
+| `STOCK_SERVICE_GRPC_TARGET` | Stock Service gRPC 주소 | `stock-service:50051` |
+| `STOCK_SYNC_ENABLED` | 시작 시 전체 동기화 루프 실행 여부 | `true` |
+| `STOCK_SYNC_PAGE_SIZE` | `SearchStocks` 페이지 크기 | `100` |
+| `STOCK_SYNC_CONCURRENCY` | Stock Service 동시 요청 수 | `5` |
+| `STOCK_SYNC_REQUESTS_PER_SECOND` | 초당 최대 요청 수 | `10` |
+| `STOCK_SYNC_INTERVAL_SECONDS` | 전체 동기화 반복 간격 | `86400` |
+| `STOCK_GRPC_TIMEOUT_SECONDS` | Stock Service RPC timeout | `5` |
+| `GRPC_PORT` | Advisory gRPC 포트 | `50051` |
+
+로컬 Compose에서 Stock Service를 함께 실행하지 않는다면 다음처럼 설정한다.
+
+```env
+DATABASE_URL=postgresql://advisory:advisory@postgres:5432/advisory
+STOCK_SYNC_ENABLED=false
+```
+
+`.env`는 비밀정보를 포함할 수 있으므로 커밋하지 않는다.
+
+## 로컬 실행
+
+### 사전 준비
 
 ```bash
-uv sync                  # 의존성 설치 (Python 3.12.13)
-cp .env.example .env      # 환경변수 채우기
-make compose-up            # PostgreSQL(pgvector) + advisory-service 기동
-make seed                  # 개발 DB에 TEST001~TEST005 가짜 종목 입력
-make test                   # 단위테스트 (domain/application/infrastructure는 즉시 실행 가능)
-make integration-test       # 전용 PostgreSQL(5434)을 띄워 실제 repository/transaction 검증
-make integration-down       # 통합 테스트 DB 제거
+uv python install 3.12.13
+uv sync
+cp .env.example .env
 ```
 
-`integration-test`는 개발 DB와 다른 `advisory_test` 데이터베이스만 사용한다.
-fixture는 DB 이름이 `_test`로 끝나지 않으면 스키마 초기화를 거부하므로 운영·개발
-DB를 실수로 삭제하지 않는다. 정상 저장뿐 아니라 존재하지 않는 stock_code로
-추천 저장이 실패할 때 프로필 upsert까지 rollback되는지도 검증한다.
+### Docker Compose 실행
 
-`make seed`는 로컬에서 결측 재무지표, 음수 PER, 고변동성 등의 동작을 확인하기
-위한 테스트 종목만 추가한다. `db/seed.sql`은 운영 환경에서 실행하지 않는다.
+`.env`의 `DATABASE_URL` 호스트를 `postgres`로 설정한 후 실행한다.
 
-## 설계 결정 근거
+```bash
+make compose-up
+```
+
+다른 터미널에서 상태를 확인한다.
+
+```bash
+docker compose ps
+```
+
+`postgres`와 `advisory-service`가 모두 `Up`이어야 한다.
+
+로컬 개발용 경계 사례 5개를 입력하려면 다음 명령을 실행한다.
+
+```bash
+make seed
+```
+
+`db/seed.sql`은 정상, 적자, 재무지표 결측, 고변동성, 변동성 결측 종목을
+`TEST001`~`TEST005`로 추가한다. `ON CONFLICT DO UPDATE`를 사용하므로 반복
+실행해도 중복되지 않으며 운영 환경에서는 실행하지 않는다.
+
+서비스와 DB 볼륨을 종료·삭제하려면 다음 명령을 사용한다.
+
+```bash
+make compose-down
+```
+
+현재 `compose-down`은 `docker compose down -v`를 실행하므로 로컬 DB 데이터도
+함께 삭제한다.
+
+### 호스트에서 애플리케이션 실행
+
+PostgreSQL과 Stock Service에 호스트에서 접근 가능한 주소를 `.env`에 설정한 뒤:
+
+```bash
+make run
+```
+
+## gRPC 코드 생성
+
+```bash
+make grpc
+```
+
+`scripts/generate_grpc.sh`는 `proto/`의 계약으로부터 코드를 생성하고
+`src/advisory_service/transport/grpc/generated/`에 배치한다. 생성 결과는 Git으로
+관리하지 않으며 로컬 실행, 테스트 및 Docker 빌드 과정에서 다시 생성한다.
+
+## 검사와 테스트
+
+```bash
+make lint               # Ruff: src와 tests 검사
+make test               # gRPC 코드 생성 후 integration 제외 전체 테스트
+make integration-test   # localhost:5434의 advisory_test DB로 통합 테스트
+make integration-down   # 통합 테스트 DB와 임시 볼륨 정리
+```
+
+`make test`에는 unit과 gRPC contract 테스트가 포함된다. 통합 테스트는
+`docker-compose.test.yml`의 별도 PostgreSQL을 사용한다. fixture는 DB 이름이
+`_test`로 끝나지 않으면 스키마 초기화를 거부해 개발·운영 DB의 실수 삭제를 막는다.
+
+## 주요 설계 결정
 
 | 결정 | 이유 |
 |---|---|
-| 헥사고날 아키텍처 | domain(순수 스코어링 로직)을 DB/LLM/gRPC로부터 분리해 테스트 용이성 확보. 포트만 바뀌면 어댑터(구현체) 교체가 자유로움 |
-| LangGraph (LangChain 아님) | validate → retry 사이클, 조건 분기, 노드 간 공유 State가 필요한 구조 |
-| pgvector + pg_trgm | Candle이 이미 PostgreSQL 기반 → 별도 벡터DB/Redis/TimescaleDB 없이 하이브리드 검색 구현 가능 |
-| 키워드=trgm, 의미=vector 이원화 | 한국어 형태소 분석 없이도 종목명/코드는 trgm이 정확, 의미 기반 질의는 vector가 강함 |
-| score_breakdown + improvement_tags | fit_score 숫자 하나로는 "왜"를 설명 못함 → narrative 프롬프트 근거. improvement_tags는 규칙 기반 계산(LLM 아님)이라 결정론적 |
-| 임베딩: text-embedding-3-small / LLM: gpt-4o-mini | 개발 예산(약 $4) 대비 충분히 여유로운 비용 구조 |
-| Python 3.12.13 | grpcio/asyncpg 등 핵심 의존성이 안정적으로 지원하는 검증된 버전 |
+| 헥사고날 아키텍처 | 핵심 로직을 DB, LLM, gRPC에서 분리하고 어댑터 교체와 테스트를 쉽게 하기 위해 |
+| 조회/동기화 포트 분리 | 스코어링 노드와 배치 루프처럼 실제 소비자가 서로 다르기 때문에 |
+| LangGraph | 노드 간 공유 상태, 조건 분기, validate 후 재시도가 필요하기 때문에 |
+| pgvector + pg_trgm | 종목명·코드 검색과 의미 검색을 기존 PostgreSQL 안에서 함께 처리하기 위해 |
+| 결정론적 점수와 LLM 설명 분리 | 추천 점수는 재현 가능하게 계산하고 LLM은 설명 생성에만 사용하기 위해 |
+| Python 3.12 + uv lock | 개발, CI, Docker의 Python·의존성 환경을 재현하기 위해 |
 
-## MVP 스코프
+## MVP 범위
 
-**포함**: Stock Service 동기화, 하이브리드 검색+RRF(k=60 고정), 순수함수 스코어링
-(밸류에이션/수익성/변동성 3축), LangGraph 기본 플로우 + 1회 재시도 밸리데이션,
-승률 리포팅용 `price_snapshot` 필드만 우선 기록.
+포함:
 
-**제외 (우선순위)**
+- Stock Service 종목·재무정보 동기화
+- 후보 종목의 90일 변동성 계산 및 캐시
+- pgvector + pg_trgm 하이브리드 검색과 RRF
+- 밸류에이션, 수익성, 변동성 기반 적합도 점수
+- LangGraph 추천 흐름과 검증 실패 시 1회 재시도
+- OpenAI 기반 추천 근거 생성
+- 추천 결과 및 추천 시점 가격 저장
 
-| 순위 | 항목 | 사유 |
-|---|---|---|
-| 1 | 업종 평균 대비 상대 밸류에이션 | 기존 sector 데이터로 바로 구현 가능 |
-| 2 | RRF/스코어링 가중치 자동 튜닝 | 평가 라벨(정답 데이터) 부재로 아직 무의미 |
-| 3 | 학습콘텐츠 연동 확장 | 담당자 서비스 소관 |
-| 4 | 피드백 기반 재학습, 승률 리포팅 | 시간이 흘러야 검증 가능해 물리적으로 불가 |
+현재 제외 또는 추후 협의:
 
-## Stock Service 호출량
-
-대상 약 500종목 기준 전체 동기화는 `SearchStocks(size=100)` 약 5회와 종목별
-`GetStock` 약 500회다. 동시성 5, 최대 10RPS로 제한하며 시작 직후와 이후
-24시간마다 실행한다. `GetCandles`는 추천 후보의 변동성 캐시가 없을 때만
-최대 20회 호출하고 계산 결과와 최근 종가를 로컬에 저장한다.
-
-## 다음 단계
-
-**팀/타 서비스 협의 필요**: 재무지표 최신화 주기, 학습콘텐츠 담당자와
-improvement_tags 노출, Candle 전체 Python 서비스 CI/CD 규칙.
+- 업종 평균 대비 상대 밸류에이션
+- RRF 및 스코어링 가중치 자동 튜닝
+- 배당수익률·부채비율 기반 점수
+- 학습 콘텐츠 연동 범위
+- 피드백 기반 재학습과 추천 성과 리포트
+- Candle 전체 Python 서비스 CI/CD 규칙
