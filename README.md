@@ -77,6 +77,7 @@ make grpc   # proto -> src/advisory_service/transport/grpc/generated/ 코드 생
 uv sync                  # 의존성 설치 (Python 3.12.13)
 cp .env.example .env      # 환경변수 채우기
 make compose-up            # PostgreSQL(pgvector) + advisory-service 기동
+make seed                  # 개발 DB에 TEST001~TEST005 가짜 종목 입력
 make test                   # 단위테스트 (domain/application/infrastructure는 즉시 실행 가능)
 make integration-test       # 전용 PostgreSQL(5434)을 띄워 실제 repository/transaction 검증
 make integration-down       # 통합 테스트 DB 제거
@@ -86,6 +87,9 @@ make integration-down       # 통합 테스트 DB 제거
 fixture는 DB 이름이 `_test`로 끝나지 않으면 스키마 초기화를 거부하므로 운영·개발
 DB를 실수로 삭제하지 않는다. 정상 저장뿐 아니라 존재하지 않는 stock_code로
 추천 저장이 실패할 때 프로필 upsert까지 rollback되는지도 검증한다.
+
+`make seed`는 로컬에서 결측 재무지표, 음수 PER, 고변동성 등의 동작을 확인하기
+위한 테스트 종목만 추가한다. `db/seed.sql`은 운영 환경에서 실행하지 않는다.
 
 ## 설계 결정 근거
 

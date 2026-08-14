@@ -1,4 +1,4 @@
-.PHONY: install lint test integration-up integration-test integration-down grpc run compose-up compose-down
+.PHONY: install lint test integration-up integration-test integration-down grpc run compose-up compose-down seed
 
 install:
 	uv sync
@@ -26,6 +26,9 @@ run: grpc
 
 compose-up:
 	docker compose up --build
+
+seed:
+	docker compose exec -T postgres psql -U advisory -d advisory < db/seed.sql
 
 compose-down:
 	docker compose down -v
