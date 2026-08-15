@@ -2,6 +2,8 @@
 
 import asyncio
 import signal
+from datetime import UTC, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 import structlog
 
@@ -45,7 +47,9 @@ async def _amain() -> None:
         sync_task = asyncio.create_task(
             _run_stock_sync_loop(
                 application.stock_catalog_synchronizer,
-                settings.stock_sync_interval_seconds,
+                sync_time=settings.stock_sync_time,
+                timezone=ZoneInfo(settings.stock_sync_timezone),
+                run_on_startup=settings.stock_sync_run_on_startup,
             )
         )
     try:
@@ -61,15 +65,45 @@ async def _amain() -> None:
         await application.close()
 
 
-async def _run_stock_sync_loop(synchronizer, interval_seconds: int) -> None:
+def _next_sync_at(now: datetime, sync_time: time, timezone: ZoneInfo) -> datetime:
+    local_now = now.astimezone(timezone)
+    next_run = datetime.combine(local_now.date(), sync_time, tzinfo=timezone)
+    if next_run < local_now:
+        next_run += timedelta(days=1)
+    return next_run
+
+
+async def _sync_stock_catalog(synchronizer) -> None:
     log = structlog.get_logger()
+    try:
+        synced = await synchronizer.sync_all()
+        log.info("stock_catalog_synchronized", synced_count=synced)
+    except Exception:
+        log.exception("stock_catalog_sync_failed")
+
+
+async def _run_stock_sync_loop(
+    synchronizer,
+    *,
+    sync_time: time,
+    timezone: ZoneInfo,
+    run_on_startup: bool = False,
+) -> None:
+    log = structlog.get_logger()
+    if run_on_startup:
+        await _sync_stock_catalog(synchronizer)
+
     while True:
-        try:
-            synced = await synchronizer.sync_all()
-            log.info("stock_catalog_synchronized", synced_count=synced)
-        except Exception:
-            log.exception("stock_catalog_sync_failed")
-        await asyncio.sleep(max(interval_seconds, 60))
+        now = datetime.now(UTC)
+        next_run = _next_sync_at(now, sync_time, timezone)
+        delay_seconds = max((next_run - now).total_seconds(), 0)
+        log.info(
+            "stock_catalog_sync_scheduled",
+            scheduled_at=next_run.isoformat(),
+            delay_seconds=round(delay_seconds),
+        )
+        await asyncio.sleep(delay_seconds)
+        await _sync_stock_catalog(synchronizer)
 
 
 def main() -> None:

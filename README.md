@@ -150,8 +150,9 @@ investment_horizon:
 
 전체 종목을 약 4,000개로 가정하면 초기 동기화는 `SearchStocks(size=100)` 약
 40회와 종목별 `GetStock` 약 4,000회다. 기본값은 동시성 5, 최대 10 RPS이며
-네트워크 지연과 재시도를 포함해 약 7~10분을 예상한다. 현재 구현은 서비스 시작
-직후 동기화를 한 번 실행하고 이후 `STOCK_SYNC_INTERVAL_SECONDS` 간격으로 반복한다.
+네트워크 지연과 재시도를 포함해 약 7~10분을 예상한다. 운영 기본값은 매일
+23:00 KST(`Asia/Seoul`)이며, 작업이 끝난 시점부터 24시간을 세지 않고 다음
+달력 날짜의 23:00을 다시 계산하므로 실행 시각이 뒤로 밀리지 않는다.
 
 ## 데이터베이스
 
@@ -179,11 +180,13 @@ cp .env.example .env
 | `DATABASE_URL` | PostgreSQL 연결 문자열 | Compose에서는 `postgresql://advisory:advisory@postgres:5432/advisory` |
 | `OPENAI_API_KEY` | 임베딩 및 추천 근거 생성용 키 | 필수 |
 | `STOCK_SERVICE_GRPC_TARGET` | Stock Service gRPC 주소 | `stock-service:50051` |
-| `STOCK_SYNC_ENABLED` | 시작 시 전체 동기화 루프 실행 여부 | `true` |
+| `STOCK_SYNC_ENABLED` | 전체 종목 동기화 스케줄러 실행 여부 | `true` |
+| `STOCK_SYNC_RUN_ON_STARTUP` | 서버 시작 직후 추가 동기화 여부 | `false` |
+| `STOCK_SYNC_TIME` | 매일 전체 동기화 실행 시각 | `23:00` |
+| `STOCK_SYNC_TIMEZONE` | 동기화 시각의 IANA timezone | `Asia/Seoul` |
 | `STOCK_SYNC_PAGE_SIZE` | `SearchStocks` 페이지 크기 | `100` |
 | `STOCK_SYNC_CONCURRENCY` | Stock Service 동시 요청 수 | `5` |
 | `STOCK_SYNC_REQUESTS_PER_SECOND` | 초당 최대 요청 수 | `10` |
-| `STOCK_SYNC_INTERVAL_SECONDS` | 전체 동기화 반복 간격 | `86400` |
 | `STOCK_GRPC_TIMEOUT_SECONDS` | Stock Service RPC timeout | `5` |
 | `VOLATILITY_CACHE_TTL_SECONDS` | 계산된 변동성 재사용 시간 | `86400` |
 | `GRPC_PORT` | Advisory gRPC 포트 | `50051` |
@@ -194,6 +197,10 @@ cp .env.example .env
 DATABASE_URL=postgresql://advisory:advisory@postgres:5432/advisory
 STOCK_SYNC_ENABLED=false
 ```
+
+최초 배포에서 23:00 이전에도 캐시를 즉시 채워야 하는 경우에만
+`STOCK_SYNC_RUN_ON_STARTUP=true`를 일시적으로 사용한다. 기본값 `false`는 업무
+시간 중 Pod 재시작이 전체 4,000종목 동기화를 다시 유발하지 않도록 한다.
 
 `.env`는 비밀정보를 포함할 수 있으므로 커밋하지 않는다.
 
