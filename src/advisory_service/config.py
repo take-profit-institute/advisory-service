@@ -24,6 +24,13 @@ class Settings(BaseSettings):
     stock_sync_timezone: str = "Asia/Seoul"
     stock_grpc_timeout_seconds: float = 5.0
     volatility_cache_ttl_seconds: int = 86_400
+    # 변동성 캐시 워밍. 요청 경로에서 GetCandles를 타지 않게 하는 것이 목적이라
+    # 기본값은 켜짐이다. stale 기준은 TTL의 절반이어야 다음 워밍 전에 캐시가
+    # 만료되지 않는다.
+    market_metrics_warm_enabled: bool = True
+    market_metrics_warm_on_startup: bool = True
+    market_metrics_warm_stale_after_seconds: int = 43_200
+    market_metrics_warm_batch_size: int = 100
     grpc_port: int = 50051
 
     @field_validator("stock_sync_timezone")

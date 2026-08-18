@@ -42,16 +42,33 @@ async def _amain() -> None:
         except NotImplementedError:  # pragma: no cover - Windows fallback
             pass
 
+    warmer = (
+        application.market_metrics_warmer
+        if settings.market_metrics_warm_enabled
+        else None
+    )
     sync_task = None
     if settings.stock_sync_enabled:
         sync_task = asyncio.create_task(
             _run_stock_sync_loop(
                 application.stock_catalog_synchronizer,
+                warmer,
                 sync_time=settings.stock_sync_time,
                 timezone=ZoneInfo(settings.stock_sync_timezone),
                 run_on_startup=settings.stock_sync_run_on_startup,
             )
         )
+
+    # 기동 시 카탈로그 동기화까지 도는 설정이면 그 뒤에 워밍이 이어지므로
+    # 여기서 또 돌리지 않는다 (같은 종목에 GetCandles 중복 호출 방지).
+    warm_on_startup = settings.market_metrics_warm_on_startup and not (
+        settings.stock_sync_enabled and settings.stock_sync_run_on_startup
+    )
+    warm_task = None
+    if warmer is not None and warm_on_startup:
+        # 카탈로그 동기화와 달리 워밍은 기동 직후에도 돌린다. 배포 직후
+        # 캐시가 비어 있으면 다음 스케줄까지 추천이 계속 실패하기 때문이다.
+        warm_task = asyncio.create_task(_warm_market_metrics(warmer))
     try:
         await serve(
             servicer,
@@ -59,9 +76,10 @@ async def _amain() -> None:
             shutdown_event=shutdown_event,
         )
     finally:
-        if sync_task is not None:
-            sync_task.cancel()
-            await asyncio.gather(sync_task, return_exceptions=True)
+        for task in (sync_task, warm_task):
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
         await application.close()
 
 
@@ -82,8 +100,32 @@ async def _sync_stock_catalog(synchronizer) -> None:
         log.exception("stock_catalog_sync_failed")
 
 
+async def _warm_market_metrics(warmer) -> None:
+    """
+    변동성/종가를 미리 계산해 캐시에 적재한다.
+
+    실패해도 서비스는 계속 떠 있어야 한다 — 워밍이 안 되면 요청 경로가
+    느려질 뿐(기존 gRPC 보충 fallback), 기동을 막을 이유는 없다.
+    """
+    log = structlog.get_logger()
+    try:
+        result = await warmer.warm_all()
+        log.info(
+            "market_metrics_warmed",
+            targeted=result.targeted,
+            refreshed=result.refreshed,
+            unavailable=result.unavailable,
+            failed=result.failed,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log.exception("market_metrics_warm_failed")
+
+
 async def _run_stock_sync_loop(
     synchronizer,
+    warmer=None,
     *,
     sync_time: time,
     timezone: ZoneInfo,
@@ -92,6 +134,8 @@ async def _run_stock_sync_loop(
     log = structlog.get_logger()
     if run_on_startup:
         await _sync_stock_catalog(synchronizer)
+        if warmer is not None:
+            await _warm_market_metrics(warmer)
 
     while True:
         now = datetime.now(UTC)
@@ -104,6 +148,10 @@ async def _run_stock_sync_loop(
         )
         await asyncio.sleep(delay_seconds)
         await _sync_stock_catalog(synchronizer)
+        # 카탈로그가 갱신된 직후에 워밍한다. 신규 상장 종목도 같은 배치에서
+        # 변동성이 채워져야 첫 추천 요청부터 후보에 들어온다.
+        if warmer is not None:
+            await _warm_market_metrics(warmer)
 
 
 def main() -> None:

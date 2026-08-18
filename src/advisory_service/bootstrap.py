@@ -30,12 +30,18 @@ from advisory_service.infrastructure.persistence.session import create_pool
 from advisory_service.infrastructure.retrieval.hybrid_stock_search import (
     HybridStockSearch,
 )
+from advisory_service.infrastructure.stock_catalog.grpc_market_metrics import (
+    GrpcMarketMetricsFetcher,
+)
 from advisory_service.infrastructure.stock_catalog.grpc_stock_catalog import (
     GrpcStockCatalogSynchronizer,
     StockServiceGrpcClient,
 )
 from advisory_service.infrastructure.stock_catalog.grpc_stock_metrics_reader import (
     GrpcBackedStockMetricsReader,
+)
+from advisory_service.infrastructure.stock_catalog.market_metrics_warmer import (
+    MarketMetricsWarmer,
 )
 
 log = structlog.get_logger()
@@ -45,6 +51,7 @@ log = structlog.get_logger()
 class Application:
     use_case: GenerateAdvisoryUseCase
     stock_catalog_synchronizer: GrpcStockCatalogSynchronizer
+    market_metrics_warmer: MarketMetricsWarmer
     pool: asyncpg.Pool
     stock_channel: grpc.aio.Channel
     openai_client: AsyncOpenAI
@@ -84,6 +91,18 @@ async def build_application(settings: Settings) -> Application:
         page_size=settings.stock_sync_page_size,
         concurrency=settings.stock_sync_concurrency,
     )
+    market_metrics_fetcher = GrpcMarketMetricsFetcher(
+        stock_channel,
+        timeout_seconds=settings.stock_grpc_timeout_seconds,
+        requests_per_second=settings.stock_sync_requests_per_second,
+        concurrency=settings.stock_sync_concurrency,
+    )
+    market_metrics_warmer = MarketMetricsWarmer(
+        market_metrics_fetcher,
+        stock_cache,
+        stale_after_seconds=settings.market_metrics_warm_stale_after_seconds,
+        batch_size=settings.market_metrics_warm_batch_size,
+    )
     stock_metrics_reader = GrpcBackedStockMetricsReader(
         stock_channel,
         stock_cache,
@@ -109,6 +128,7 @@ async def build_application(settings: Settings) -> Application:
     return Application(
         use_case=use_case,
         stock_catalog_synchronizer=stock_catalog_synchronizer,
+        market_metrics_warmer=market_metrics_warmer,
         pool=pool,
         stock_channel=stock_channel,
         openai_client=openai_client,

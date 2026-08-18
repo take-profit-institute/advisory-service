@@ -143,12 +143,23 @@ investment_horizon:
 |---|---|
 | 종목코드, 종목명, 시장, 업종, 시가총액 | Stock Service에서 전체 동기화 |
 | PER, PBR, ROE | `GetStock(code)`로 동기화하고 `financials_fiscal_period` 기록 |
-| 90일 변동성 | 필요할 때 `GetCandles` 일봉으로 계산하고 계산 시각 기록 |
+| 90일 변동성 | 워밍 배치가 `GetCandles` 일봉으로 미리 계산하고 계산 시각 기록 |
 | 배당수익률, 부채비율 | 현재 Stock Service 계약에 없어 MVP에서 제외 |
 
-`stocks_cache`는 원본 마스터가 아니다. 추천 요청은 우선 로컬 캐시를 읽으며,
-변동성이 없는 후보만 Stock/Chart Service에서 보충한다. 재무지표나 변동성이
-결측인 종목은 값을 0으로 간주하지 않고 점수 계산 후보에서 제외한다.
+`stocks_cache`는 원본 마스터가 아니다. 추천 요청은 로컬 캐시만 읽는 것이
+정상 경로이며, 변동성이 없는 후보를 요청 중에 `GetCandles`로 보충하는 경로는
+워밍이 놓친 종목을 위한 fallback으로만 남겨둔다. 재무지표나 변동성이 결측인
+종목은 값을 0으로 간주하지 않고 점수 계산 후보에서 제외한다.
+
+**변동성 워밍이 필요한 이유**: 후보 20종목이 전부 cache miss면 요청 한 건이
+`GetCandles`를 20회 호출한다. 10 RPS 제한까지 겹쳐 `STOCK_GRPC_TIMEOUT_SECONDS`
+(5초)를 넘기고, 요청은 `DEPENDENCY_UNAVAILABLE`로 실패한다. 그래서
+`MarketMetricsWarmer`가 기동 직후와 매일 카탈로그 동기화 직후에 변동성이 없거나
+`MARKET_METRICS_WARM_STALE_AFTER_SECONDS`(기본 12시간)보다 오래된 종목을 일괄
+갱신한다. stale 기준을 `VOLATILITY_CACHE_TTL_SECONDS`(24시간)의 절반으로 두는
+이유는, 둘이 같으면 다음 워밍 직전에 캐시가 먼저 만료돼 요청이 다시 gRPC
+보충 경로를 타기 때문이다. 종목 단위 실패는 배치를 중단시키지 않고
+`market_metrics_warmed` 로그에 `refreshed`/`unavailable`/`failed`로 집계된다.
 
 전체 종목을 약 4,000개로 가정하면 초기 동기화는 `SearchStocks(size=100)` 약
 40회와 종목별 `GetStock` 약 4,000회다. 기본값은 동시성 5, 최대 10 RPS이며
@@ -200,6 +211,10 @@ cp .env.example .env
 | `STOCK_SYNC_REQUESTS_PER_SECOND` | 초당 최대 요청 수 | `10` |
 | `STOCK_GRPC_TIMEOUT_SECONDS` | Stock Service RPC timeout | `5` |
 | `VOLATILITY_CACHE_TTL_SECONDS` | 계산된 변동성 재사용 시간 | `86400` |
+| `MARKET_METRICS_WARM_ENABLED` | 변동성/종가 캐시 워밍 실행 여부 | `true` |
+| `MARKET_METRICS_WARM_ON_STARTUP` | 기동 직후 워밍 여부 (동기화가 startup에 돌면 생략) | `true` |
+| `MARKET_METRICS_WARM_STALE_AFTER_SECONDS` | 이 시간보다 오래된 변동성을 워밍 대상으로 판단 | `43200` |
+| `MARKET_METRICS_WARM_BATCH_SIZE` | 워밍 배치 한 묶음의 종목 수 | `100` |
 | `GRPC_PORT` | Advisory gRPC 포트 | `50051` |
 
 로컬 Compose에서 Stock Service를 함께 실행하지 않는다면 다음처럼 설정한다.

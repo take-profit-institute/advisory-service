@@ -7,16 +7,11 @@ from datetime import UTC, datetime, timedelta
 import grpc
 
 from advisory_service.domain.models.candidate import StockMetrics
-from advisory_service.domain.services.volatility import annualized_volatility
 from advisory_service.infrastructure.persistence.repositories.postgres_stock_cache import (
     PostgresStockCache,
 )
-from advisory_service.infrastructure.stock_catalog.grpc_stock_catalog import (
-    RequestRateLimiter,
-)
-from advisory_service.transport.grpc.generated.candle.stock.v1 import (
-    chart_pb2,
-    chart_pb2_grpc,
+from advisory_service.infrastructure.stock_catalog.grpc_market_metrics import (
+    GrpcMarketMetricsFetcher,
 )
 
 
@@ -31,11 +26,15 @@ class GrpcBackedStockMetricsReader:
         concurrency: int = 5,
         volatility_cache_ttl_seconds: int = 86_400,
     ):
-        self._stub = chart_pb2_grpc.ChartServiceStub(channel)
+        # 요청 경로의 보충 호출은 MarketMetricsWarmer와 같은 fetcher를 쓴다.
+        # 워밍이 정상 동작하면 여기는 사실상 타지 않는 fallback이다.
+        self._fetcher = GrpcMarketMetricsFetcher(
+            channel,
+            timeout_seconds=timeout_seconds,
+            requests_per_second=requests_per_second,
+            concurrency=concurrency,
+        )
         self._cache = cache
-        self._timeout_seconds = timeout_seconds
-        self._limiter = RequestRateLimiter(requests_per_second)
-        self._semaphore = asyncio.Semaphore(max(concurrency, 1))
         self._volatility_cache_ttl = timedelta(
             seconds=max(volatility_cache_ttl_seconds, 0)
         )
@@ -125,18 +124,4 @@ class GrpcBackedStockMetricsReader:
     async def _fetch_market_metrics(
         self, stock_code: str
     ) -> tuple[float, float] | None:
-        async with self._semaphore:
-            await self._limiter.wait()
-            response = await self._stub.GetCandles(
-                chart_pb2.GetCandlesRequest(
-                    code=stock_code,
-                    interval=chart_pb2.DAY_1,
-                    limit=91,
-                ),
-                timeout=self._timeout_seconds,
-            )
-        closes = [candle.close for candle in response.candles if candle.closed]
-        volatility = annualized_volatility(closes)
-        if volatility is None or not closes:
-            return None
-        return volatility, float(closes[-1])
+        return await self._fetcher.fetch(stock_code)

@@ -101,6 +101,30 @@ class PostgresStockCache:
             ),
         )
 
+    async def list_stale_market_metric_codes(
+        self, stale_after_seconds: int
+    ) -> list[str]:
+        """
+        변동성이 없거나 오래된 종목 코드를 반환한다 (워밍 배치 대상).
+
+        요청 경로의 TTL(volatility_cache_ttl_seconds)보다 짧은 기준을 쓰는 게
+        정상이다. 워밍 주기가 TTL과 같으면 다음 워밍 직전에 캐시가 먼저 만료돼
+        요청이 다시 gRPC 보충 경로를 타게 된다.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT stock_code
+                FROM stocks_cache
+                WHERE volatility_90d IS NULL
+                   OR volatility_calculated_at IS NULL
+                   OR volatility_calculated_at < now() - make_interval(secs => $1)
+                ORDER BY stock_code
+                """,
+                float(stale_after_seconds),
+            )
+        return [row["stock_code"] for row in rows]
+
     async def upsert(self, stock: dict, financials: dict | None) -> None:
         async with self._pool.acquire() as conn:
             await conn.execute(
