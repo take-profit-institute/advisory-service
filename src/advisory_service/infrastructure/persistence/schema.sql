@@ -1,6 +1,13 @@
 -- ============================================================
 -- Candle Advisory Service - DB Schema (MVP)
 -- PostgreSQL + pgvector(벡터) + pg_trgm(키워드)
+--
+-- 이 파일은 패키지 안에 있다(db/가 아니라). 이미지에 src/만 COPY되고
+-- migrations.apply_schema()가 기동 시 이 파일을 읽어 적용하기 때문이다.
+-- Java 서비스의 Flyway에 해당하는 역할 — 다만 버전 테이블 없이 전체를
+-- 매번 재적용하는 방식이라 모든 DDL이 반드시 멱등해야 한다.
+-- 컬럼 추가/변경은 CREATE TABLE 수정만으로는 반영되지 않으므로
+-- ALTER ... IF NOT EXISTS 형태로 파일 끝에 덧붙일 것.
 -- ============================================================
 
 CREATE EXTENSION IF NOT EXISTS vector;
@@ -31,7 +38,7 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 --      - volatility_90d : Stock Service가 직접 제공하지 않음.
 --        candles(일봉) 원본 데이터를 받아 advisory-service가 직접 계산
 -- ------------------------------------------------------------
-CREATE TABLE stocks_cache (
+CREATE TABLE IF NOT EXISTS stocks_cache (
     stock_code                    VARCHAR(20) PRIMARY KEY,     -- Stock Service gRPC의 code
     name_kr                        VARCHAR(100) NOT NULL,      -- 종목명 (한글)
     name_en                        VARCHAR(100),
@@ -55,13 +62,13 @@ CREATE TABLE stocks_cache (
     synced_at                               TIMESTAMPTZ NOT NULL DEFAULT now()  -- 마지막 동기화 시각
 );
 
-CREATE INDEX idx_stocks_cache_name_trgm ON stocks_cache USING GIN (name_kr gin_trgm_ops);
-CREATE INDEX idx_stocks_cache_code_trgm ON stocks_cache USING GIN (stock_code gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_stocks_cache_name_trgm ON stocks_cache USING GIN (name_kr gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_stocks_cache_code_trgm ON stocks_cache USING GIN (stock_code gin_trgm_ops);
 
 -- ------------------------------------------------------------
 -- 2. 종목 내러티브 문서 (비정형 데이터: 벡터 검색이 강한 영역)
 -- ------------------------------------------------------------
-CREATE TABLE stock_narratives (
+CREATE TABLE IF NOT EXISTS stock_narratives (
     narrative_id    BIGSERIAL PRIMARY KEY,
     stock_code      VARCHAR(20) NOT NULL REFERENCES stocks_cache(stock_code) ON DELETE CASCADE,
     narrative_type  VARCHAR(30) NOT NULL,
@@ -71,17 +78,17 @@ CREATE TABLE stock_narratives (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE UNIQUE INDEX uq_stock_narratives_source
+CREATE UNIQUE INDEX IF NOT EXISTS uq_stock_narratives_source
     ON stock_narratives (stock_code, narrative_type, source);
 
-CREATE INDEX idx_narratives_embedding ON stock_narratives
+CREATE INDEX IF NOT EXISTS idx_narratives_embedding ON stock_narratives
     USING hnsw (embedding vector_cosine_ops);
-CREATE INDEX idx_narratives_content_trgm ON stock_narratives USING GIN (content gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_narratives_content_trgm ON stock_narratives USING GIN (content gin_trgm_ops);
 
 -- ------------------------------------------------------------
 -- 3. 사용자 투자 성향 프로필
 -- ------------------------------------------------------------
-CREATE TABLE user_profiles (
+CREATE TABLE IF NOT EXISTS user_profiles (
     user_id             VARCHAR(64) PRIMARY KEY,
     risk_tolerance       VARCHAR(20) NOT NULL,
     investment_horizon    VARCHAR(20),
@@ -97,7 +104,7 @@ CREATE TABLE user_profiles (
 --    성과) 리포팅을 만들 수 있게, 추천 시점의 가격 지표를 미리
 --    기록해두는 필드. 승률 계산 로직 자체는 지금 만들지 않음.
 -- ------------------------------------------------------------
-CREATE TABLE recommendations (
+CREATE TABLE IF NOT EXISTS recommendations (
     recommendation_id  BIGSERIAL PRIMARY KEY,
     user_id             VARCHAR(64) NOT NULL REFERENCES user_profiles(user_id),
     stock_code          VARCHAR(20) NOT NULL REFERENCES stocks_cache(stock_code),

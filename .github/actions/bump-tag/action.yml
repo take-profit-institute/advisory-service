@@ -1,0 +1,73 @@
+# GitOps repo(candle-k8s-lite)의 ApplicationSet 이미지 태그를 갱신한다. ArgoCD가 그 커밋을 sync.
+#
+# Java 모노레포(candle)의 .github/actions/bump-tag와 같은 구조지만, 대상 repo가
+# candle-k8s로 하드코딩돼 있던 것을 repo 입력으로 뺐다(lite는 candle-k8s-lite).
+name: bump-tag
+description: Update a service image tag in the GitOps repo
+inputs:
+  service:
+    required: true
+    description: Service name in the ApplicationSet element. Use "*" for all elements.
+  tag:
+    required: true
+    description: Image tag to write.
+  env:
+    required: true
+    default: dev
+    description: dev or prod.
+  appset:
+    required: false
+    default: services
+    description: ApplicationSet file prefix (services or batch).
+  repo:
+    required: false
+    default: candle-k8s-lite
+    description: GitOps repository name under the same owner.
+  token:
+    required: true
+    description: PAT or GitHub App token with push access to the GitOps repo.
+runs:
+  using: composite
+  steps:
+    - name: Checkout GitOps repo
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.repository_owner }}/${{ inputs.repo }}
+        token: ${{ inputs.token }}
+        path: _gitops
+    - name: Bump and push
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd _gitops
+        FILE="platform/applications/${{ inputs.appset }}-${{ inputs.env }}.yaml"
+        SVC='${{ inputs.service }}'
+        TAG='${{ inputs.tag }}'
+
+        if [ ! -f "$FILE" ]; then
+          echo "missing $FILE" >&2
+          exit 1
+        fi
+
+        # element가 한 줄({name: x, ..., tag: y})이라는 전제. 여러 줄로 풀어쓰면 매칭 실패한다.
+        if [ "$SVC" = "*" ]; then
+          perl -0pi -e 's/(-\s*\{\s*name:\s*[^}\n]*tag:\s*)[^,}\n]+/${1}'"$TAG"'/g' "$FILE"
+        else
+          perl -0pi -e 's/(\{\s*name:\s*'"$SVC"'\b[^}\n]*tag:\s*)[^,}\n]+/${1}'"$TAG"'/g' "$FILE"
+        fi
+
+        git config user.name "candle-ci"
+        git config user.email "ci@candle.local"
+        git add "$FILE"
+        # 대상 element가 아직 없으면 diff가 비어 no-op으로 끝난다(첫 이미지 push 시 정상).
+        git diff --cached --quiet && { echo "no change"; exit 0; }
+        git commit -m "deploy(${{ inputs.env }}): ${{ inputs.appset }}/${{ inputs.service }} -> $TAG"
+
+        for attempt in 1 2 3; do
+          git pull --rebase origin main || true
+          if git push; then
+            exit 0
+          fi
+          sleep $((attempt * 2))
+        done
+        exit 1

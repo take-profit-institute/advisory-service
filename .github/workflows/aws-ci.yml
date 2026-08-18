@@ -1,0 +1,126 @@
+# advisory-service CI/CD
+#
+#   PR        : lint + unit + integration 테스트만
+#   push main : 테스트 → ECR push(tag=커밋 SHA) → candle-k8s-lite의 tag bump → ArgoCD sync
+#
+# Java 모노레포(candle)의 aws-ci.yml과 흐름은 같지만 단일 서비스라 paths-filter/matrix가 없고,
+# 배포 대상이 lite 클러스터뿐이라 role/ECR도 lite 소유다(infrastructure-lite/envs/dev/ci.tf).
+#
+# 필요한 repo 설정
+#   vars.CI_DEPLOY_ROLE_ARN : arn:aws:iam::633597729239:role/candle-lite-dev-ci-deploy
+#   secrets.GITOPS_TOKEN    : candle-k8s-lite push 권한 PAT
+name: aws-ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      env:
+        description: Deploy environment
+        default: dev
+        type: choice
+        options: [dev]
+
+permissions:
+  id-token: write
+  contents: read
+
+# 같은 브랜치의 실행이 겹치면 GitOps repo에 동시 push가 나면서 뒤늦은 커밋이 이전 태그를
+# 덮어쓸 수 있다. 취소하지는 않고 순서만 보장한다.
+concurrency:
+  group: aws-ci-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-northeast-2
+  ECR_REPOSITORY: candle/advisory-service
+  DEPLOY_ENV: ${{ inputs.env || 'dev' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # setup-uv 액션 대신 공식 설치 스크립트를 쓴다 — 액션 메이저 버전에 물리지 않게.
+      # python 3.12(requires-python)은 uv sync가 알아서 받아온다.
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Cache uv
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          restore-keys: uv-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Lint
+        run: make lint
+
+      # make test가 scripts/generate_grpc.sh를 먼저 돌린다(생성 코드는 커밋되지 않음).
+      - name: Unit tests
+        run: make test
+
+      # pgvector 컨테이너를 띄워 스키마 적용/저장소 쿼리까지 실제 DB로 검증.
+      - name: Integration tests
+        run: make integration-test
+
+  image:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.CI_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ECR repo가 IMMUTABLE이라 같은 SHA로 재실행하면 push가 거부된다.
+      # 이미 올라간 태그면 빌드를 건너뛰고 bump만 수행한다(워크플로 재실행 = 재배포).
+      - name: Check existing tag
+        id: existing
+        run: |
+          if aws ecr describe-images \
+               --repository-name "$ECR_REPOSITORY" \
+               --image-ids imageTag="${{ github.sha }}" >/dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "이미 push된 태그 — 빌드 생략"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+        if: steps.existing.outputs.found == 'false'
+
+      - name: Build and push image
+        if: steps.existing.outputs.found == 'false'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          # 배포 대상이 t3 인스턴스 한 대뿐 — arm 빌드는 시간만 든다.
+          platforms: linux/amd64
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          cache-from: type=gha,scope=advisory-service
+          cache-to: type=gha,mode=max,scope=advisory-service
+
+      - uses: ./.github/actions/bump-tag
+        with:
+          service: advisory-service
+          tag: ${{ github.sha }}
+          env: ${{ env.DEPLOY_ENV }}
+          appset: services
+          repo: candle-k8s-lite
+          token: ${{ secrets.GITOPS_TOKEN }}

@@ -1,9 +1,10 @@
 import os
-from pathlib import Path
 
 import asyncpg
 import pytest
 import pytest_asyncio
+
+from advisory_service.infrastructure.persistence.migrations import SCHEMA_PATH
 
 TEST_DATABASE_URL_ENV = "TEST_DATABASE_URL"
 
@@ -26,8 +27,7 @@ async def postgres_pool() -> asyncpg.Pool:
             )
 
         await connection.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public")
-        schema_path = Path(__file__).parents[2] / "db" / "schema.sql"
-        await connection.execute(schema_path.read_text(encoding="utf-8"))
+        await connection.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
     finally:
         await connection.close()
 

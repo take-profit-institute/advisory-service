@@ -35,8 +35,10 @@ transport → application → domain
 ```text
 advisory-service/
 ├── db/
-│   ├── schema.sql                         # 테이블, pgvector/pg_trgm 인덱스
 │   └── seed.sql                           # 로컬 개발용 TEST001~TEST005
+├── .github/
+│   ├── workflows/aws-ci.yml               # 테스트 → ECR push → GitOps tag bump
+│   └── actions/bump-tag/                  # candle-k8s-lite ApplicationSet 태그 갱신
 ├── proto/
 │   ├── advisory/v1/advisory.proto         # 외부에 노출하는 AdvisoryService 계약
 │   └── candle/                            # Stock/Common Service 계약
@@ -55,7 +57,7 @@ advisory-service/
 │   │       └── use_case.py                # GenerateAdvisoryUseCase
 │   ├── infrastructure/
 │   │   ├── llm/                           # OpenAI 추천 근거 생성
-│   │   ├── persistence/                   # asyncpg pool 및 PostgreSQL repository
+│   │   ├── persistence/                   # asyncpg pool, schema.sql, PostgreSQL repository
 │   │   ├── retrieval/                     # vector + trgm + RRF 검색
 │   │   └── stock_catalog/                 # Stock/Chart Service gRPC 연동
 │   ├── transport/grpc/
@@ -156,7 +158,7 @@ investment_horizon:
 
 ## 데이터베이스
 
-`db/schema.sql`은 다음 테이블을 생성한다.
+`src/advisory_service/infrastructure/persistence/schema.sql`은 다음 테이블을 생성한다.
 
 - `stocks_cache`: 동기화한 종목·재무·변동성 스냅샷
 - `stock_narratives`: 검색 문서와 1,536차원 임베딩
@@ -166,6 +168,14 @@ investment_horizon:
 PostgreSQL에는 `vector`, `pg_trgm` 확장이 필요하다. 벡터 검색에는 HNSW,
 종목명·종목코드·문서 키워드 검색에는 GIN trigram 인덱스를 사용한다. 두 검색
 순위는 RRF(`k=60`)로 합친다.
+
+스키마는 기동 시 `bootstrap.build_application`이 자동 적용한다(`DB_AUTO_MIGRATE=true`,
+기본값). Flyway 같은 버전 테이블 없이 `schema.sql` 전체를 매번 재실행하는 방식이라
+**모든 DDL이 멱등해야 한다** — 컬럼 추가는 `CREATE TABLE` 수정이 아니라
+`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`를 파일 끝에 덧붙여야 반영된다.
+`CREATE EXTENSION`에는 superuser가 필요하므로 이 서비스는 공용 인스턴스가 아니라
+전용 PostgreSQL(로컬 compose, lite의 `advisory-postgres`)에 접속한다. 스키마를
+외부에서 관리하는 환경이면 `DB_AUTO_MIGRATE=false`로 끈다.
 
 ## 환경 설정
 
@@ -179,7 +189,8 @@ cp .env.example .env
 |---|---|---|
 | `DATABASE_URL` | PostgreSQL 연결 문자열 | Compose에서는 `postgresql://advisory:advisory@postgres:5432/advisory` |
 | `OPENAI_API_KEY` | 임베딩 및 추천 근거 생성용 키 | 필수 |
-| `STOCK_SERVICE_GRPC_TARGET` | Stock Service gRPC 주소 | `stock-service:50051` |
+| `DB_AUTO_MIGRATE` | 기동 시 `schema.sql` 적용 여부 | `true` |
+| `STOCK_SERVICE_GRPC_TARGET` | Stock Service gRPC 주소 | `stock-service:50051` (lite 클러스터는 `stock-service:9090`) |
 | `STOCK_SYNC_ENABLED` | 전체 종목 동기화 스케줄러 실행 여부 | `true` |
 | `STOCK_SYNC_RUN_ON_STARTUP` | 서버 시작 직후 추가 동기화 여부 | `false` |
 | `STOCK_SYNC_TIME` | 매일 전체 동기화 실행 시각 | `23:00` |
@@ -279,6 +290,43 @@ make integration-down   # 통합 테스트 DB와 임시 볼륨 정리
 `make test`에는 unit과 gRPC contract 테스트가 포함된다. 통합 테스트는
 `docker-compose.test.yml`의 별도 PostgreSQL을 사용한다. fixture는 DB 이름이
 `_test`로 끝나지 않으면 스키마 초기화를 거부해 개발·운영 DB의 실수 삭제를 막는다.
+
+## 배포 (CI/CD)
+
+`main` 푸시 → GitHub Actions(`.github/workflows/aws-ci.yml`) → ECR → ArgoCD 순으로 흐른다.
+
+```
+push main ─ test(lint·unit·integration)
+          └ image ─ OIDC assume(candle-lite-dev-ci-deploy)
+                  ─ ECR push  candle/advisory-service:<커밋 SHA>
+                  └ bump-tag  candle-k8s-lite/platform/applications/services-dev.yaml
+                              └ ArgoCD auto-sync → lite 클러스터(k3s) 재배포
+```
+
+PR에서는 테스트만 돌고 이미지 빌드·배포는 하지 않는다.
+
+| 항목 | 값 |
+|---|---|
+| ECR | `633597729239.dkr.ecr.ap-northeast-2.amazonaws.com/candle/advisory-service` |
+| 이미지 태그 | 커밋 SHA (repo가 IMMUTABLE — 같은 SHA 재실행 시 빌드 생략 후 bump만) |
+| 인증 | GitHub OIDC → `candle-lite-dev-ci-deploy` (이 repo만 assume 가능, 키 없음) |
+| 배포 대상 | lite k3s 클러스터, namespace `candle` |
+
+인프라 정의는 `infrastructure-lite/envs/dev/ci.tf`(ECR·IAM), 배포 매니페스트는
+`candle-k8s-lite`(ApplicationSet + services chart)에 있다.
+
+repo 설정 두 가지가 있어야 동작한다.
+
+```bash
+gh variable set CI_DEPLOY_ROLE_ARN --body arn:aws:iam::633597729239:role/candle-lite-dev-ci-deploy
+gh secret set GITOPS_TOKEN   # candle-k8s-lite push 권한 PAT
+```
+
+클러스터에서 쓰는 값 중 `OPENAI_API_KEY`는 git에 두지 않고 Secret으로 직접 만든다.
+
+```bash
+kubectl -n candle create secret generic advisory-service-app --from-literal=OPENAI_API_KEY=...
+```
 
 ## 주요 설계 결정
 

@@ -19,6 +19,7 @@ from advisory_service.config import Settings
 from advisory_service.infrastructure.llm.openai_narrative_generator import (
     OpenAINarrativeGenerator,
 )
+from advisory_service.infrastructure.persistence.migrations import apply_schema
 from advisory_service.infrastructure.persistence.repositories.postgres_advisory_repository import (
     PostgresAdvisoryRepository,
 )
@@ -56,6 +57,10 @@ class Application:
 
 async def build_application(settings: Settings) -> Application:
     pool = await create_pool(settings)
+    # 저장소 구현체를 조립하기 전에 스키마부터 맞춘다. 실패하면 여기서 예외로
+    # 죽는 게 맞다 — 테이블 없이 기동해봐야 첫 요청에서 터진다.
+    if settings.db_auto_migrate:
+        await apply_schema(pool)
     openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
     stock_channel = grpc.aio.insecure_channel(settings.stock_service_grpc_target)
 

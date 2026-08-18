@@ -12,6 +12,8 @@ class Settings(BaseSettings):
 
     database_url: str
     openai_api_key: str
+    # 기동 시 schema.sql 적용(멱등). 스키마를 외부에서 관리하는 환경이면 끈다.
+    db_auto_migrate: bool = True
     stock_service_grpc_target: str = "stock-service:50051"
     stock_sync_page_size: int = 100
     stock_sync_concurrency: int = 5

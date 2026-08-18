@@ -11,7 +11,9 @@ services:
       - "5432:5432"
     volumes:
       - advisory_pgdata:/var/lib/postgresql/data
-      - ./db/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+      # 스키마는 앱이 기동 시 직접 적용한다(migrations.apply_schema).
+      # 여기 initdb 마운트는 psql로 seed를 넣기 전에 테이블이 있게 하는 편의용.
+      - ./src/advisory_service/infrastructure/persistence/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U advisory -d advisory"]
       interval: 2s

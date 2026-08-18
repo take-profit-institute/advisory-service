@@ -1,0 +1,30 @@
+# 빌드 컨텍스트 최소화 + 로컬 비밀(.env)이 데몬으로 넘어가지 않게.
+# Dockerfile이 COPY하는 것: pyproject.toml, uv.lock, README.md, proto/, src/
+.git
+.gitignore
+.github
+.venv
+.env
+.env.*
+!.env.example
+
+__pycache__/
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+
+tests
+db
+docs
+scripts
+Makefile
+docker-compose*.yml
+Dockerfile
+.dockerignore
+
+# 로컬에서 만든 생성 코드는 넣지 않는다. proto-builder 스테이지가 컨테이너 안에서
+# 다시 컴파일한 결과로 덮어쓰므로, 여기 있으면 stale 코드가 섞일 뿐이다.
+src/advisory_service/transport/grpc/generated
