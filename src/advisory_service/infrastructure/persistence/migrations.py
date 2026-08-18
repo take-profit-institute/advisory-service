@@ -23,8 +23,7 @@ log = structlog.get_logger()
 
 async def apply_schema(pool: asyncpg.Pool) -> None:
     sql = SCHEMA_PATH.read_text(encoding="utf-8")
-    async with pool.acquire() as connection:
-        # PostgreSQL은 DDL도 트랜잭션이라, 중간에 실패하면 부분 적용 없이 전부 롤백된다.
-        async with connection.transaction():
-            await connection.execute(sql)
+    # PostgreSQL은 DDL도 트랜잭션이라, 중간에 실패하면 부분 적용 없이 전부 롤백된다.
+    async with pool.acquire() as connection, connection.transaction():
+        await connection.execute(sql)
     log.info("db_schema_applied", schema_path=str(SCHEMA_PATH))

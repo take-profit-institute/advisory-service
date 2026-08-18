@@ -3,7 +3,9 @@
 install:
 	uv sync
 
-lint:
+# 생성 코드가 없으면 ruff가 transport.grpc.generated.* 를 서드파티로 분류해
+# import 정렬(I001)을 잘못 지적한다. 그래서 lint도 grpc 생성에 의존한다.
+lint: grpc
 	uv run ruff check src tests
 
 test: grpc
