@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     market_metrics_warm_on_startup: bool = True
     market_metrics_warm_stale_after_seconds: int = 43_200
     market_metrics_warm_batch_size: int = 100
+    # 워밍은 요청 경로가 아니라 배치다. GetCandles가 캔들이 없는 종목에 대해
+    # 서버 쪽 백필을 유발해 첫 호출이 수십 초 걸리므로 timeout을 따로 크게 준다.
+    market_metrics_warm_timeout_seconds: float = 30.0
+    # 1회차에서 백필만 유발하고 timeout된 종목을 2회차에서 회수한다.
+    market_metrics_warm_passes: int = 2
     grpc_port: int = 50051
 
     @field_validator("stock_sync_timezone")

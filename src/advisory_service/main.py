@@ -116,6 +116,7 @@ async def _warm_market_metrics(warmer) -> None:
             refreshed=result.refreshed,
             unavailable=result.unavailable,
             failed=result.failed,
+            passes=result.passes,
         )
     except asyncio.CancelledError:
         raise

@@ -161,6 +161,14 @@ investment_horizon:
 보충 경로를 타기 때문이다. 종목 단위 실패는 배치를 중단시키지 않고
 `market_metrics_warmed` 로그에 `refreshed`/`unavailable`/`failed`로 집계된다.
 
+**워밍 timeout이 요청 경로와 다른 이유**: Stock Service의 `GetCandles`는 일봉이
+없는 종목에 대해 외부 시세 백필을 먼저 수행한다. 그래서 첫 호출은 수십 초가
+걸리고, `STOCK_GRPC_TIMEOUT_SECONDS`(5초)를 그대로 쓰면 백필만 유발한 채
+DEADLINE_EXCEEDED로 끝난다(실제로 첫 배포에서 이 현상이 났다). 워밍은 배치라
+`MARKET_METRICS_WARM_TIMEOUT_SECONDS`(기본 30초)를 따로 쓰고, 그래도 실패한
+종목은 `MARKET_METRICS_WARM_PASSES`(기본 2)회차에서 재시도한다 — 이때는
+서버에 캔들이 이미 적재돼 있어 로컬 조회로 끝난다.
+
 전체 종목을 약 4,000개로 가정하면 초기 동기화는 `SearchStocks(size=100)` 약
 40회와 종목별 `GetStock` 약 4,000회다. 기본값은 동시성 5, 최대 10 RPS이며
 네트워크 지연과 재시도를 포함해 약 7~10분을 예상한다. 운영 기본값은 매일
@@ -215,6 +223,8 @@ cp .env.example .env
 | `MARKET_METRICS_WARM_ON_STARTUP` | 기동 직후 워밍 여부 (동기화가 startup에 돌면 생략) | `true` |
 | `MARKET_METRICS_WARM_STALE_AFTER_SECONDS` | 이 시간보다 오래된 변동성을 워밍 대상으로 판단 | `43200` |
 | `MARKET_METRICS_WARM_BATCH_SIZE` | 워밍 배치 한 묶음의 종목 수 | `100` |
+| `MARKET_METRICS_WARM_TIMEOUT_SECONDS` | 워밍 배치의 `GetCandles` timeout (요청 경로와 별도) | `30` |
+| `MARKET_METRICS_WARM_PASSES` | 실패 종목 회수를 위한 최대 반복 횟수 | `2` |
 | `GRPC_PORT` | Advisory gRPC 포트 | `50051` |
 
 로컬 Compose에서 Stock Service를 함께 실행하지 않는다면 다음처럼 설정한다.

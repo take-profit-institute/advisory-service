@@ -93,7 +93,9 @@ async def build_application(settings: Settings) -> Application:
     )
     market_metrics_fetcher = GrpcMarketMetricsFetcher(
         stock_channel,
-        timeout_seconds=settings.stock_grpc_timeout_seconds,
+        # 요청 경로(stock_grpc_timeout_seconds)와 달리 배치는 서버 쪽 백필을
+        # 기다려도 된다. 짧게 잡으면 백필만 유발하고 값은 못 받는다.
+        timeout_seconds=settings.market_metrics_warm_timeout_seconds,
         requests_per_second=settings.stock_sync_requests_per_second,
         concurrency=settings.stock_sync_concurrency,
     )
@@ -102,6 +104,7 @@ async def build_application(settings: Settings) -> Application:
         stock_cache,
         stale_after_seconds=settings.market_metrics_warm_stale_after_seconds,
         batch_size=settings.market_metrics_warm_batch_size,
+        passes=settings.market_metrics_warm_passes,
     )
     stock_metrics_reader = GrpcBackedStockMetricsReader(
         stock_channel,
